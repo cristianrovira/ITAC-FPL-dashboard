@@ -1,0 +1,9 @@
+streamlit==1.40.1
+pandas
+numpy
+openpyxl
+xlsxwriter==3.2.0
+matplotlib==3.9.2
+altair==5.4.1
+pillow>=9.1
+tornado==6.1
