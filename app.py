@@ -1,0 +1,189 @@
+"""Streamlit entry point for the ITAC FPL Dashboard Analysis Tool."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pandas as pd
+import streamlit as st
+
+from fpl_dashboard.charts import dashboard_charts
+from fpl_dashboard.estimation import estimate_missing_months
+from fpl_dashboard.extraction import extract_excel_file
+from fpl_dashboard.processing import find_potential_issues, process_files
+from fpl_dashboard.reporting import create_excel_report
+from fpl_dashboard.schedule_ui import configure_schedule
+from fpl_dashboard.utils import INTERVAL_LABELS, interval_label
+from fpl_dashboard.validation import missing_months_by_account, validate_files
+
+
+st.set_page_config(page_title="ITAC FPL Dashboard Analysis Tool", page_icon="📊", layout="wide")
+
+ASSET_PATH = Path(__file__).parent / "assets" / "Logo-University-of-Miami.jpg"
+
+def rounded_summary(frame: pd.DataFrame) -> pd.DataFrame:
+    result = frame.copy()
+    result.insert(
+        3,
+        "Month / Year",
+        pd.to_datetime(dict(year=result["Year"], month=result["Month"], day=1)).dt.strftime("%B %Y"),
+    )
+    for column in result.columns:
+        if column.endswith("kWh") or column.endswith("kW"):
+            result[column] = pd.to_numeric(result[column], errors="coerce").round(0)
+        elif column.endswith("%"):
+            result[column] = pd.to_numeric(result[column], errors="coerce").round(1)
+    return result
+
+
+if ASSET_PATH.exists():
+    st.image(str(ASSET_PATH), width=280)
+st.title("ITAC FPL Dashboard Analysis Tool")
+st.write(
+    "Upload FPL interval-data workbooks to create monthly and annual energy and demand summaries. "
+    "The tool validates each file, applies the operating schedule, and produces a downloadable Excel report."
+)
+
+st.header("Step 1: Upload Files")
+st.info(
+    "You may upload fewer than 12 monthly files per account. Missing months are detected after validation "
+    "and are estimated only after you explicitly confirm."
+)
+account_count = int(st.number_input("Number of accounts", min_value=1, max_value=20, value=1, step=1))
+uploaded_by_account: list[tuple[str, list[object]]] = []
+for account_index in range(account_count):
+    account_name = f"Account {account_index + 1}"
+    uploads = st.file_uploader(
+        f"Excel files for {account_name}",
+        type=["xlsx", "xls"],
+        accept_multiple_files=True,
+        key=f"account_files_{account_index}",
+    )
+    uploaded_by_account.append((account_name, list(uploads or [])))
+
+st.header("Step 2: Configure Operating Schedule")
+shifts, _ = configure_schedule()
+if not any(shift["active"] for shift in shifts) or not any(shift["days"] for shift in shifts if shift["active"]):
+    st.warning("At least one active shift and one operating day are required.")
+
+st.header("Step 3: Confirm Detected Data")
+all_uploads = [(account, upload) for account, uploads in uploaded_by_account for upload in uploads]
+extracted_files = [extract_excel_file(upload.getvalue(), upload.name, account) for account, upload in all_uploads]
+
+if not extracted_files:
+    st.warning("Upload at least one Excel file to continue.")
+else:
+    demand_selections: dict[tuple[str, str], list[str]] = {}
+    for file_index, item in enumerate(extracted_files):
+        key = (item.account, item.filename)
+        if len(item.demand_columns) == 1:
+            demand_selections[key] = item.demand_columns
+        elif item.numeric_columns:
+            prompt = "Select demand column(s)" if not item.demand_columns else "Confirm demand column(s)"
+            demand_selections[key] = st.multiselect(
+                f"{prompt} — {item.account} / {item.filename}",
+                item.numeric_columns,
+                default=item.demand_columns[:1],
+                key=f"demand_selection_{file_index}",
+                help="Select multiple columns only when their kW values should be added into one account total.",
+            )
+        else:
+            demand_selections[key] = []
+
+    st.caption(
+        "The data interval is how much time each row in the FPL Excel file represents. "
+        "Choosing the wrong interval can affect calculated kWh."
+    )
+    detected_values = [item.detected_interval_hours for item in extracted_files]
+    if all(value is not None for value in detected_values):
+        st.success("Detected interval(s): " + ", ".join(sorted({interval_label(value) for value in detected_values})))
+    else:
+        st.warning("At least one interval could not be detected. Use the manual override below for that file.")
+
+    override_intervals = st.checkbox("Manually override detected interval")
+    interval_overrides: dict[tuple[str, str], float] = {}
+    if override_intervals:
+        labels = list(INTERVAL_LABELS)
+        for file_index, item in enumerate(extracted_files):
+            detected = interval_label(item.detected_interval_hours)
+            default_index = labels.index(detected) if detected in labels else 0
+            selected_label = st.selectbox(
+                f"Data interval — {item.account} / {item.filename}",
+                labels,
+                index=default_index,
+                key=f"interval_override_{file_index}",
+            )
+            interval_overrides[(item.account, item.filename)] = INTERVAL_LABELS[selected_label]
+
+    file_log, validation_errors, validation_warnings = validate_files(
+        extracted_files, demand_selections, interval_overrides
+    )
+    st.dataframe(file_log, use_container_width=True, hide_index=True)
+    for message in validation_warnings:
+        st.warning(message)
+    for message in validation_errors:
+        st.error(message)
+
+    missing = {account: periods for account, periods in missing_months_by_account(extracted_files).items() if periods}
+    if missing:
+        for account, periods in missing.items():
+            st.warning(
+                f"{account} is missing {len(periods)} reporting month(s) from its rolling 12-month "
+                "analysis window: "
+                + ", ".join(period.strftime("%B %Y") for period in periods)
+                + "."
+            )
+        confirm_estimation = st.checkbox(
+            "I understand that missing months will be estimated using nearby available months."
+        )
+    else:
+        confirm_estimation = True
+
+    active_schedule = any(shift["active"] and shift["days"] and shift.get("valid", True) for shift in shifts)
+    can_generate = not validation_errors and confirm_estimation and active_schedule
+    if st.button("Generate Dashboard", type="primary", disabled=not can_generate):
+        try:
+            interval_data, actual_summary = process_files(
+                extracted_files, shifts, demand_selections, interval_overrides
+            )
+            complete_summary, estimation_notes = estimate_missing_months(actual_summary)
+            report = create_excel_report(complete_summary, file_log, estimation_notes)
+            st.session_state["analysis_result"] = {
+                "summary": complete_summary,
+                "interval_data": interval_data,
+                "estimation_notes": estimation_notes,
+                "file_log": file_log,
+                "report": report,
+                "warnings": validation_warnings,
+            }
+        except Exception as exc:
+            st.error(f"Processing failed: {exc}")
+
+if "analysis_result" in st.session_state:
+    result = st.session_state["analysis_result"]
+    summary = result["summary"]
+    st.header("Step 4: Generate Dashboard")
+    st.subheader("Monthly Summary")
+    st.caption("Estimated rows are monthly summary estimates only; no fake interval readings are created.")
+    st.dataframe(rounded_summary(summary), use_container_width=True, hide_index=True)
+
+    for title, chart, explanation in dashboard_charts(summary):
+        st.subheader(title)
+        st.altair_chart(chart, use_container_width=True)
+        st.caption(explanation)
+
+    st.subheader("Potential Issues Detected")
+    st.caption("These are transparent screening flags, not definitive engineering findings.")
+    for issue in find_potential_issues(summary):
+        st.write(f"• {issue}")
+    for warning in result["warnings"]:
+        st.write(f"• Validation warning: {warning}")
+
+    st.header("Step 5: Download Report")
+    st.download_button(
+        "Download complete Excel report",
+        data=result["report"],
+        file_name="ITAC_FPL_Dashboard_Report.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        type="primary",
+    )
