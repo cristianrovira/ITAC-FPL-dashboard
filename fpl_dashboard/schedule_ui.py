@@ -17,6 +17,12 @@ DAY_OPTIONS = {
     "Saturday": 5,
     "Sunday": 6,
 }
+DAY_NAMES = list(DAY_OPTIONS)
+DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+DAY_ALIASES = {
+    **{day.lower(): index for day, index in DAY_OPTIONS.items()},
+    **{label.lower(): index for index, label in enumerate(DAY_LABELS)},
+}
 PRESET_OPTIONS = [
     "Standard business hours",
     "Two shifts",
@@ -43,11 +49,23 @@ def _preset_shifts(preset: str) -> list[tuple[str, time, time]]:
 
 
 def _days_for_preset(preset: str) -> list[str]:
-    return list(DAY_OPTIONS) if preset == "24/7 operation" else list(DAY_OPTIONS)[:5]
+    return DAY_NAMES if preset == "24/7 operation" else DAY_NAMES[:5]
+
+
+def _format_days(days: list[str] | list[int]) -> str:
+    labels: list[str] = []
+    for day in days:
+        if isinstance(day, int):
+            if 0 <= day < len(DAY_LABELS):
+                labels.append(DAY_LABELS[day])
+            continue
+        if day in DAY_OPTIONS:
+            labels.append(DAY_LABELS[DAY_OPTIONS[day]])
+    return ", ".join(labels)
 
 
 def _schedule_frame(preset: str, days: list[str]) -> pd.DataFrame:
-    day_label = ", ".join(day[:3] for day in days)
+    day_label = _format_days(days)
     return pd.DataFrame(
         [
             {
@@ -60,6 +78,68 @@ def _schedule_frame(preset: str, days: list[str]) -> pd.DataFrame:
             for name, start, end in _preset_shifts(preset)
         ]
     )
+
+
+def _parse_single_day(value: str) -> int | None:
+    normalized = value.strip().lower().rstrip(".")
+    return DAY_ALIASES.get(normalized)
+
+
+def _parse_day_range(value: str) -> list[int] | None:
+    if "-" in value:
+        start_text, end_text = value.split("-", 1)
+    elif " to " in value.lower():
+        start_text, end_text = value.lower().split(" to ", 1)
+    else:
+        return None
+
+    start = _parse_single_day(start_text)
+    end = _parse_single_day(end_text)
+    if start is None or end is None:
+        return None
+
+    days = [start]
+    current = start
+    while current != end:
+        current = (current + 1) % 7
+        days.append(current)
+    return days
+
+
+def _parse_days(value: object) -> list[int]:
+    """Parse editable day text from the schedule table into weekday numbers."""
+    if value is None or pd.isna(value):
+        return []
+    text = str(value).strip()
+    if not text:
+        return []
+
+    normalized = text.lower().strip()
+    if normalized in {"all", "daily", "every day", "24/7", "24x7"}:
+        return list(range(7))
+    if normalized in {"weekday", "weekdays", "mon-fri", "monday-friday", "monday to friday"}:
+        return list(range(5))
+    if normalized in {"weekend", "weekends", "sat-sun", "saturday-sunday", "saturday to sunday"}:
+        return [5, 6]
+
+    pieces = (
+        text.replace("&", ",")
+        .replace("/", ",")
+        .replace(";", ",")
+        .replace(" and ", ",")
+        .split(",")
+    )
+    days: list[int] = []
+    for piece in pieces:
+        piece = piece.strip()
+        if not piece:
+            continue
+        range_days = _parse_day_range(piece)
+        parsed = range_days if range_days is not None else [_parse_single_day(piece)]
+        for day in parsed:
+            if day is not None and day not in days:
+                days.append(day)
+    return days
 
 
 def _initialize_schedule_state() -> None:
@@ -79,14 +159,6 @@ def _load_selected_preset() -> None:
     days = _days_for_preset(preset)
     st.session_state.operating_days = days
     st.session_state.configured_shift_rows = _schedule_frame(preset, days)
-    st.session_state.pop("configured_shifts_editor", None)
-
-
-def _mark_custom_from_days() -> None:
-    st.session_state.schedule_preset = "Custom schedule"
-    rows = st.session_state.configured_shift_rows.copy()
-    rows["Days"] = ", ".join(day[:3] for day in st.session_state.operating_days)
-    st.session_state.configured_shift_rows = rows
     st.session_state.pop("configured_shifts_editor", None)
 
 
@@ -125,6 +197,11 @@ def _coerce_time(value: object) -> time | None:
         return value
     if value is None or pd.isna(value):
         return None
+    normalized = str(value).strip().lower()
+    if normalized in {"midnight", "24:00", "24:00:00"}:
+        return time(0)
+    if normalized == "noon":
+        return time(12)
     try:
         return pd.to_datetime(str(value)).time()
     except (TypeError, ValueError):
@@ -141,27 +218,18 @@ def configure_schedule() -> tuple[list[dict[str, object]], pd.DataFrame]:
         key="schedule_preset",
         on_change=_load_selected_preset,
         help=(
-            "Presets populate default shifts. Editing a preset's operating days or shift table "
+            "Presets populate default shifts. Editing any row in the shift table "
             "automatically changes the selection to Custom schedule."
         ),
     )
-    selected_days = st.multiselect(
-        "Operating days",
-        list(DAY_OPTIONS),
-        key="operating_days",
-        disabled=preset == "24/7 operation",
-        on_change=_mark_custom_from_days,
-    )
-    if preset == "24/7 operation":
-        selected_days = list(DAY_OPTIONS)
 
     rows = st.session_state.configured_shift_rows.copy()
-    rows["Days"] = ", ".join(day[:3] for day in selected_days)
 
     st.subheader("Configured Shifts")
     st.caption(
-        "Edit a start or end time directly in the table. Any change to a preset schedule "
-        "automatically converts it to Custom schedule. Custom schedules may contain up to three shifts."
+        "Edit each shift's days and times directly in the table. Examples: Mon-Fri, Sat-Sun, "
+        "weekdays, weekends, or 24/7. Any change to a preset schedule automatically converts "
+        "it to Custom schedule. Custom schedules may contain up to three shifts."
     )
     edited_rows = st.data_editor(
         rows,
@@ -169,13 +237,12 @@ def configure_schedule() -> tuple[list[dict[str, object]], pd.DataFrame]:
         hide_index=True,
         use_container_width=True,
         num_rows="dynamic" if preset == "Custom schedule" else "fixed",
-        disabled=["Days"],
         on_change=_mark_custom_from_table,
         column_config={
             "Shift name": st.column_config.TextColumn("Shift name", required=True),
-            "Days": st.column_config.TextColumn("Days"),
+            "Days": st.column_config.TextColumn("Days", help="Examples: Mon-Fri, Sat-Sun, weekends, 24/7", required=True),
             "Start time": st.column_config.TextColumn("Start time", help="For example: 8:00 AM", required=True),
-            "End time": st.column_config.TextColumn("End time", help="For example: 5:00 PM", required=True),
+            "End time": st.column_config.TextColumn("End time", help="For example: 12:00 AM", required=True),
             "Active": st.column_config.CheckboxColumn("Active"),
         },
     )
@@ -191,12 +258,13 @@ def configure_schedule() -> tuple[list[dict[str, object]], pd.DataFrame]:
     for index, row in edited_rows.iterrows():
         start = _coerce_time(row.get("Start time"))
         end = _coerce_time(row.get("End time"))
-        valid = start is not None and end is not None and not too_many
+        days = _parse_days(row.get("Days"))
+        valid = start is not None and end is not None and bool(days) and not too_many
         name = str(row.get("Shift name") or f"Shift {index + 1}").strip()
         shifts.append(
             {
                 "name": name,
-                "days": [DAY_OPTIONS[day] for day in selected_days],
+                "days": days,
                 "start": start,
                 "end": end,
                 "active": bool(row.get("Active", True)),
@@ -204,5 +272,5 @@ def configure_schedule() -> tuple[list[dict[str, object]], pd.DataFrame]:
             }
         )
     if any(not shift["valid"] for shift in shifts):
-        st.error("Every configured shift must have a valid start and end time.")
+        st.error("Every configured shift must have valid days plus a valid start and end time.")
     return shifts, edited_rows

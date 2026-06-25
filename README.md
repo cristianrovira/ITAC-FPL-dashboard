@@ -30,7 +30,7 @@ Choose the number of FPL accounts and upload one or more `.xlsx` or `.xls` inter
 
 The reader prioritizes the legacy FPL layout with headers on Excel row 4, then checks several common header positions. It accepts a combined timestamp column such as `DateTime` or `Timestamp`, or separate `Date` and `Time` columns.
 
-### 2. Define operating days and shifts
+### 2. Define operating shifts
 
 Choose one of these presets:
 
@@ -40,7 +40,7 @@ Choose one of these presets:
 - 24/7 operation
 - Custom schedule with up to three shifts
 
-The Configured Shifts table is editable. Changing a preset shift time or its operating days automatically switches the preset to Custom schedule while preserving the edited values. Custom schedules can contain up to three shifts. Overnight shifts such as 11:00 PM–6:30 AM are supported. After-midnight readings belong to the day on which the overnight shift started.
+The Configured Shifts table is editable. Each row has its own Days value, so weekday and weekend shifts can use different operating days. Examples include Mon-Fri, Sat-Sun, weekdays, weekends, and 24/7. Changing a preset shift time or days automatically switches the preset to Custom schedule while preserving the edited values. Custom schedules can contain up to three shifts. Overnight shifts such as 11:00 PM-6:30 AM are supported. A shift ending at 12:00 AM runs until midnight at the end of the selected day; after-midnight readings for overnight shifts belong to the day on which the overnight shift started.
 
 ### 3. Confirm detected data
 
