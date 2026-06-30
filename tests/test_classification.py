@@ -2,7 +2,7 @@ from datetime import time
 
 import pandas as pd
 
-from fpl_dashboard.classification import is_on_peak, is_operating
+from fpl_dashboard.classification import classify_operating, is_on_peak, is_operating
 
 
 def test_operating_and_non_operating_classification():
@@ -29,6 +29,12 @@ def test_overnight_shift_uses_starting_day():
     assert is_operating(pd.Timestamp("2025-06-02 23:30"), shifts)  # Monday
     assert is_operating(pd.Timestamp("2025-06-03 02:00"), shifts)  # Monday's shift
     assert not is_operating(pd.Timestamp("2025-06-02 02:00"), shifts)  # Sunday was not operating
+
+
+def test_around_the_clock_schedule_marks_every_day_operating():
+    shifts = [{"days": list(range(7)), "start": time(0), "end": time(0), "active": True}]
+    timestamps = pd.Series(pd.to_datetime(["2025-06-07 02:00", "2025-06-09 14:00"]))
+    assert classify_operating(timestamps, shifts).tolist() == [True, True]
 
 
 def test_legacy_on_peak_classification():

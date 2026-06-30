@@ -44,6 +44,20 @@ def timestamp_in_shift(timestamp: pd.Timestamp, shift: Shift) -> bool:
     )
 
 
+
+def is_around_the_clock_schedule(shifts: Iterable[Shift]) -> bool:
+    active_days: set[int] = set()
+    for shift in shifts:
+        if not _active_shift(shift):
+            continue
+        start = shift.get("start")
+        end = shift.get("end")
+        days = {int(day) for day in shift.get("days", [])}
+        if isinstance(start, time) and isinstance(end, time) and start == end:
+            active_days.update(days)
+    return active_days == set(range(7))
+
+
 def is_operating(timestamp: pd.Timestamp, shifts: Iterable[Shift]) -> bool:
     return any(timestamp_in_shift(timestamp, shift) for shift in shifts)
 

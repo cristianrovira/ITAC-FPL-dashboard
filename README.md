@@ -44,7 +44,9 @@ The Configured Shifts table is editable. Each row has its own Days value, so wee
 
 ### 3. Confirm detected data
 
-Before processing, the app displays an Input File Log preview containing the account, file name, assigned reporting month and year, timestamp and demand columns, interval, row count, status, and messages. A normal month-length billing period may begin in one calendar month and end in the next; it is assigned to one reporting month and is not treated as a duplicate. The app blocks unreadable workbooks, missing required fields, and duplicate assigned reporting months, and flags short files, uncertain timestamp spacing, inconsistent intervals, or files spanning more than two calendar months or 45 days.
+Before processing, the app displays an Input File Log preview containing the account, file name, assigned reporting month and year, timestamp and demand columns, interval, row count, status, and messages. A normal month-length billing period may begin in one calendar month and end in the next; it is assigned to one reporting month and is not treated as a duplicate. The app blocks unreadable workbooks, missing required fields, and duplicate assigned reporting months, and flags short files, uncertain timestamp spacing, inconsistent intervals, partial reporting months, or files spanning more than two calendar months or 45 days.
+
+The app also suggests a 12-month report period from the uploaded files, preferring the latest reasonably complete reporting month when the newest upload appears partial. Most users can accept this detected period. If the official reporting year is different, check **Change detected report period** and choose the report end month; the dashboard will cover the 12 months ending with that month.
 
 Demand columns are detected from numeric columns whose names suggest demand or kW while excluding kWh/energy columns. When detection is missing or ambiguous, the app asks the user to choose. Selecting multiple demand columns adds their row-level kW values into one account total.
 
@@ -84,14 +86,15 @@ Monthly output includes total kWh, peak demand, operating/non-operating energy a
 
 Missing months are never silently estimated. The app lists them and requires this confirmation:
 
-> I understand that missing months will be estimated using nearby available months.
+> I understand that missing months will be estimated from available month trends.
 
-Actual interval files are processed first. Every workbook keeps all of its interval rows but contributes to its single assigned reporting month. The annual view is the 12 consecutive reporting months ending with the latest uploaded month, so the window can cross from one calendar year into the next. Only monthly summary values are estimated—no fake interval-level data is generated.
+Actual interval files are processed first. Every workbook keeps all of its interval rows but contributes to its single assigned reporting month. The annual view is the selected 12-month report period, so the window can cross from one calendar year into the next. Only monthly summary values are estimated; no fake interval-level data is generated.
 
 - One missing month between actual months uses their midpoint.
-- Consecutive missing months use linear interpolation across the gap.
-- January and December can use circular December/February or November/January neighbors.
-- If only one actual month exists, its monthly values are carried to the other months with Low confidence.
+- Consecutive missing months between actual months use linear interpolation across the gap.
+- Missing months before the first actual month or after the last actual month use a capped trend extrapolation from the nearest two actual months instead of flat-copying one month repeatedly.
+- If only one actual month exists, its monthly values are carried to other months, with far-away months marked Very Low confidence.
+- Long leading or trailing estimate runs are marked Low or Very Low confidence because they are inherently less reliable.
 
 Every row includes `Data Source`, `Estimate Method`, and `Confidence`. Estimated values remain labeled in Streamlit, chart tooltips/source data, Monthly Summary, and Estimation Notes.
 
@@ -117,7 +120,7 @@ Estimated rows are highlighted in the workbook. Energy and demand display values
 python -m pytest
 ```
 
-The tests cover 15/30/60-minute interval detection, cross-calendar-month billing periods, rolling 12-month windows, duplicate reporting months, ordinary and overnight shifts, the documented legacy peak rule, cross-year interpolation, source labels, and Excel report sheet creation.
+The tests cover 15/30/60-minute interval detection, cross-calendar-month billing periods, detected and selected report windows, duplicate reporting months, partial-month warnings, ordinary/overnight/24-7 shifts, the documented legacy peak rule, cross-year interpolation, trend extrapolation, source labels, and Excel report sheet creation.
 
 ## Deploy to Streamlit Community Cloud
 

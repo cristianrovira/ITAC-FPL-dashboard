@@ -7,7 +7,7 @@ from typing import Mapping, Sequence
 import numpy as np
 import pandas as pd
 
-from .classification import classify_on_peak, classify_operating
+from .classification import classify_on_peak, classify_operating, is_around_the_clock_schedule
 from .extraction import ExtractedFile
 from .validation import FileKey, selected_demand_columns
 
@@ -67,7 +67,10 @@ def normalize_file(
 
 def classify_intervals(frame: pd.DataFrame, shifts: Sequence[Mapping[str, object]]) -> pd.DataFrame:
     result = frame.copy()
-    result["Operating"] = classify_operating(result["Timestamp"], shifts)
+    if is_around_the_clock_schedule(shifts):
+        result["Operating"] = pd.Series(True, index=result.index, dtype=bool)
+    else:
+        result["Operating"] = classify_operating(result["Timestamp"], shifts)
     result["On-Peak"] = classify_on_peak(result["Timestamp"])
     result["Weekend"] = result["Timestamp"].dt.weekday >= 5
     result["Overnight"] = (result["Timestamp"].dt.hour < 6) | (result["Timestamp"].dt.hour >= 22)

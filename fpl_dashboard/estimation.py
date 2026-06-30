@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
+
 import numpy as np
 import pandas as pd
 
@@ -31,86 +33,167 @@ def _with_period(frame: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def detect_missing_months(summary: pd.DataFrame) -> dict[str, list[pd.Period]]:
+def _coerce_windows(windows: Mapping[str, Sequence[pd.Period]] | None) -> dict[str, pd.PeriodIndex]:
+    if not windows:
+        return {}
+    return {
+        str(account): pd.PeriodIndex([pd.Period(period, freq="M") for period in window], freq="M")
+        for account, window in windows.items()
+    }
+
+
+def detect_missing_months(
+    summary: pd.DataFrame,
+    windows: Mapping[str, Sequence[pd.Period]] | None = None,
+) -> dict[str, list[pd.Period]]:
     result: dict[str, list[pd.Period]] = {}
     if summary.empty:
         return result
+    explicit_windows = _coerce_windows(windows)
     for account, group in _with_period(summary).groupby("Account"):
         actual = set(group["Period"])
-        window = pd.period_range(end=max(actual), periods=12, freq="M")
+        window = explicit_windows.get(str(account), pd.period_range(end=max(actual), periods=12, freq="M"))
         result[str(account)] = [period for period in window if period not in actual]
     return result
 
 
-def _period_names(periods: list[pd.Period]) -> str:
-    return ", ".join(period.strftime("%B %Y") for period in periods)
+def _period_names(periods: Sequence[pd.Period]) -> str:
+    return ", ".join(pd.Period(period, freq="M").strftime("%B %Y") for period in periods)
 
 
-def _interpolate_row(
+def _numeric_value(group: pd.DataFrame, period: pd.Period, column: str) -> float | None:
+    value = pd.to_numeric(pd.Series([group.loc[period, column]]), errors="coerce").iloc[0]
+    return float(value) if pd.notna(value) else None
+
+
+def _set_numeric(row: pd.Series, column: str, value: float | None) -> None:
+    row[column] = float(max(value, 0.0)) if value is not None and pd.notna(value) else np.nan
+
+
+def _single_month_row(group: pd.DataFrame, target: pd.Period, actual_periods: list[pd.Period]) -> tuple[pd.Series, str, str]:
+    source = actual_periods[0]
+    confidence = "Very Low" if abs(source.ordinal - target.ordinal) > 2 else "Low"
+    return group.loc[source].copy(), f"Single-month carry-forward from {source.strftime('%B %Y')}", confidence
+
+
+def _linear_interpolated_row(
+    group: pd.DataFrame,
+    target: pd.Period,
+    left_period: pd.Period,
+    right_period: pd.Period,
+) -> tuple[pd.Series, str, str]:
+    distance = right_period.ordinal - left_period.ordinal
+    weight = (target.ordinal - left_period.ordinal) / distance
+    row = group.loc[left_period].copy()
+    for column in NUMERIC_ESTIMATE_COLUMNS:
+        if column not in group.columns:
+            continue
+        left = _numeric_value(group, left_period, column)
+        right = _numeric_value(group, right_period, column)
+        _set_numeric(row, column, left + (right - left) * weight if left is not None and right is not None else None)
+    gap = distance - 1
+    confidence = "Normal" if gap <= 2 else "Low"
+    if gap == 1:
+        method = f"Interpolated from {left_period.strftime('%B %Y')} and {right_period.strftime('%B %Y')}"
+    else:
+        method = f"Linear interpolation from {left_period.strftime('%B %Y')} to {right_period.strftime('%B %Y')}"
+    return row, method, confidence
+
+
+def _trend_extrapolated_row(
     group: pd.DataFrame,
     target: pd.Period,
     actual_periods: list[pd.Period],
 ) -> tuple[pd.Series, str, str]:
     if len(actual_periods) == 1:
-        source = actual_periods[0]
-        return group.loc[source].copy(), "Single-month carry-forward, low confidence", "Low"
+        return _single_month_row(group, target, actual_periods)
+
+    if target < actual_periods[0]:
+        anchor = actual_periods[0]
+        neighbor = actual_periods[1]
+        steps = anchor.ordinal - target.ordinal
+        direction = "backward"
+    else:
+        anchor = actual_periods[-1]
+        neighbor = actual_periods[-2]
+        steps = target.ordinal - anchor.ordinal
+        direction = "forward"
+
+    distance = abs(anchor.ordinal - neighbor.ordinal) or 1
+    row = group.loc[anchor].copy()
+    for column in NUMERIC_ESTIMATE_COLUMNS:
+        if column not in group.columns:
+            continue
+        anchor_value = _numeric_value(group, anchor, column)
+        neighbor_value = _numeric_value(group, neighbor, column)
+        if anchor_value is None or neighbor_value is None:
+            _set_numeric(row, column, anchor_value)
+            continue
+        monthly_change = (anchor_value - neighbor_value) / distance
+        estimate = anchor_value + monthly_change * steps
+        if anchor_value > 0:
+            estimate = min(estimate, anchor_value * (1 + 0.35 * steps))
+        _set_numeric(row, column, estimate)
+
+    confidence = "Very Low" if steps >= 3 else "Low"
+    method = (
+        f"Trend extrapolated {direction} from {anchor.strftime('%B %Y')} "
+        f"and {neighbor.strftime('%B %Y')}"
+    )
+    return row, method, confidence
+
+
+def _estimate_row(
+    group: pd.DataFrame,
+    target: pd.Period,
+    actual_periods: list[pd.Period],
+) -> tuple[pd.Series, str, str]:
+    if len(actual_periods) == 1:
+        return _single_month_row(group, target, actual_periods)
 
     before = [period for period in actual_periods if period < target]
     after = [period for period in actual_periods if period > target]
     if before and after:
-        left_period = max(before)
-        right_period = min(after)
-        distance = right_period.ordinal - left_period.ordinal
-        weight = (target.ordinal - left_period.ordinal) / distance
-        row = group.loc[left_period].copy()
-        for column in NUMERIC_ESTIMATE_COLUMNS:
-            if column not in group.columns:
-                continue
-            left = pd.to_numeric(pd.Series([group.loc[left_period, column]]), errors="coerce").iloc[0]
-            right = pd.to_numeric(pd.Series([group.loc[right_period, column]]), errors="coerce").iloc[0]
-            row[column] = float(left + (right - left) * weight) if pd.notna(left) and pd.notna(right) else np.nan
-        gap = distance - 1
-        if gap == 1:
-            method = f"Interpolated from {left_period.strftime('%B %Y')} and {right_period.strftime('%B %Y')}"
-        else:
-            method = f"Linear interpolation from {left_period.strftime('%B %Y')} to {right_period.strftime('%B %Y')}"
-        return row, method, "Normal"
+        return _linear_interpolated_row(group, target, max(before), min(after))
 
-    nearest = min(actual_periods, key=lambda period: abs(period.ordinal - target.ordinal))
-    method = f"Nearest available month ({nearest.strftime('%B %Y')}), low confidence"
-    return group.loc[nearest].copy(), method, "Low"
+    return _trend_extrapolated_row(group, target, actual_periods)
 
 
-def estimate_missing_months(summary: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Return one rolling 12-month view per account and estimation notes."""
+def estimate_missing_months(
+    summary: pd.DataFrame,
+    windows: Mapping[str, Sequence[pd.Period]] | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Return one 12-month view per account and estimation notes."""
     if summary.empty:
         return summary.copy(), pd.DataFrame(columns=NOTE_COLUMNS)
 
     completed_groups: list[pd.DataFrame] = []
     notes: list[dict[str, object]] = []
     period_summary = _with_period(summary)
+    explicit_windows = _coerce_windows(windows)
 
     for account, account_group in period_summary.groupby("Account", sort=True):
         account_group = account_group.sort_values("Period").drop_duplicates("Period", keep="last")
-        window = pd.period_range(end=account_group["Period"].max(), periods=12, freq="M")
-        account_group = account_group[account_group["Period"].isin(window)].set_index("Period")
+        account_group = account_group.set_index("Period")
         actual_periods = sorted(account_group.index.tolist())
         if not actual_periods:
             continue
 
+        window = explicit_windows.get(str(account), pd.period_range(end=max(actual_periods), periods=12, freq="M"))
         missing_periods = [period for period in window if period not in account_group.index]
         uploaded_names = _period_names(actual_periods)
         missing_names = _period_names(missing_periods)
         rows: list[pd.Series] = []
 
         for period in window:
+            period = pd.Period(period, freq="M")
             if period in account_group.index:
                 row = account_group.loc[period].copy()
                 row["Data Source"] = "Actual"
                 row["Estimate Method"] = "Actual uploaded interval file"
                 row["Confidence"] = "Normal"
             else:
-                row, method, confidence = _interpolate_row(account_group, period, actual_periods)
+                row, method, confidence = _estimate_row(account_group, period, actual_periods)
                 row["Data Source"] = "Estimated"
                 row["Estimate Method"] = method
                 row["Confidence"] = confidence

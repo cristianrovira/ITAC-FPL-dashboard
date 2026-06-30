@@ -24,7 +24,7 @@ def consolidated_summary(monthly: pd.DataFrame) -> pd.DataFrame:
         row["Peak During Non-Operating"] = bool(group["Peak During Non-Operating"].fillna(False).any())
         row["Data Source"] = "Estimated" if (group["Data Source"] == "Estimated").any() else "Actual"
         row["Estimate Method"] = "Includes estimated account summaries" if row["Data Source"] == "Estimated" else "Actual uploaded interval files"
-        row["Confidence"] = "Low" if (group["Confidence"] == "Low").any() else "Normal"
+        row["Confidence"] = "Very Low" if (group["Confidence"] == "Very Low").any() else ("Low" if (group["Confidence"] == "Low").any() else "Normal")
         total = float(row.get("Total kWh", 0))
         row["Non-Operating %"] = 100 * float(row.get("Non-Operating kWh", 0)) / total if total else 0.0
         rows.append(row)

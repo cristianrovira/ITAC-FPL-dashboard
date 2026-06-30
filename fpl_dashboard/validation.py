@@ -120,6 +120,13 @@ def validate_files(
 
 
 def missing_months_by_account(files: Sequence[ExtractedFile]) -> dict[str, list[pd.Period]]:
+    return missing_months_for_windows(files, rolling_analysis_windows(files))
+
+
+def missing_months_for_windows(
+    files: Sequence[ExtractedFile],
+    windows: Mapping[str, Sequence[pd.Period]],
+) -> dict[str, list[pd.Period]]:
     present: defaultdict[str, set[pd.Period]] = defaultdict(set)
     for item in files:
         if item.errors:
@@ -128,8 +135,7 @@ def missing_months_by_account(files: Sequence[ExtractedFile]) -> dict[str, list[
         if period is not None:
             present[item.account].add(period)
 
-    windows = rolling_analysis_windows(files)
     return {
-        account: [period for period in window if period not in present[account]]
+        account: [pd.Period(period, freq="M") for period in window if pd.Period(period, freq="M") not in present[account]]
         for account, window in windows.items()
     }

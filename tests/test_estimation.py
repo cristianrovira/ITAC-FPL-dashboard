@@ -68,8 +68,24 @@ def test_actual_and_estimated_labels_are_preserved():
     assert not notes.empty
 
 
-def test_single_month_carry_forward_is_low_confidence():
+def test_single_month_carry_forward_marks_far_months_very_low_confidence():
     completed, _ = estimate_missing_months(_summary({(2025, 6): 60}))
     estimated = completed[completed["Data Source"] == "Estimated"]
     assert (estimated["Total kWh"] == 60).all()
-    assert (estimated["Confidence"] == "Low").all()
+    assert set(estimated["Confidence"]).issubset({"Low", "Very Low"})
+    assert "Very Low" in set(estimated["Confidence"])
+
+
+def test_leading_missing_months_use_first_actual_trend_instead_of_flat_copy():
+    completed, _ = estimate_missing_months(_summary({(2025, 10): 70, (2025, 11): 60}))
+    assert _value(completed, 2025, 9) == 80
+    assert _value(completed, 2025, 8) == 90
+    september = (completed["Year"] == 2025) & (completed["Month"] == 9)
+    assert "Trend extrapolated backward" in completed.loc[september, "Estimate Method"].iloc[0]
+
+
+def test_selected_report_window_controls_output_months():
+    windows = {"A": pd.period_range("2025-03", "2026-02", freq="M")}
+    completed, _ = estimate_missing_months(_summary({(2025, 10): 70, (2025, 11): 60}), windows)
+    periods = pd.PeriodIndex.from_fields(year=completed["Year"], month=completed["Month"], freq="M")
+    assert list(periods) == list(windows["A"])
