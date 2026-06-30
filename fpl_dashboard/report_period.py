@@ -80,7 +80,7 @@ def report_window(end: pd.Period, months: int = 12) -> pd.PeriodIndex:
 
 
 def format_window(window: Sequence[pd.Period]) -> str:
-    if not window:
+    if len(window) == 0:
         return ""
     return f"{window[0].strftime('%B %Y')} through {window[-1].strftime('%B %Y')}"
 

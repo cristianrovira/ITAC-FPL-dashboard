@@ -1,7 +1,7 @@
 import pandas as pd
 
 from fpl_dashboard.extraction import ExtractedFile
-from fpl_dashboard.report_period import account_report_windows, partial_period_warnings, suggested_report_end
+from fpl_dashboard.report_period import account_report_windows, format_window, partial_period_warnings, report_window, suggested_report_end
 
 
 def _file(period: str, rows: int = 2880, interval: float = 0.25):
@@ -32,3 +32,8 @@ def test_partial_period_warning_flags_short_file():
     warnings = partial_period_warnings([_file("2026-04", rows=768)])
     assert warnings
     assert "April 2026" in warnings[0]
+
+
+def test_format_window_accepts_period_index():
+    window = report_window(pd.Period("2026-02", freq="M"))
+    assert format_window(window) == "March 2025 through February 2026"
