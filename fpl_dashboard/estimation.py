@@ -1,4 +1,4 @@
-﻿"""Estimate missing reporting-month summaries without fabricating interval data."""
+"""Estimate missing reporting-month summaries without fabricating interval data."""
 
 from __future__ import annotations
 
@@ -11,7 +11,24 @@ from .processing import DEMAND_COLUMNS, ENERGY_COLUMNS
 
 
 NUMERIC_ESTIMATE_COLUMNS = ENERGY_COLUMNS + DEMAND_COLUMNS
+PRIMARY_ESTIMATE_COLUMNS = ["Total kWh", *DEMAND_COLUMNS]
 PARTIAL_COVERAGE_THRESHOLD = 85.0
+PROFILE_SOURCE_LIMIT = 6
+CROSS_BUCKET_COLUMNS = [
+    "On-Peak Operating kWh",
+    "Off-Peak Operating kWh",
+    "On-Peak Non-Operating kWh",
+    "Off-Peak Non-Operating kWh",
+]
+DERIVED_ENERGY_COLUMNS = [
+    "Operating kWh",
+    "Non-Operating kWh",
+    "On-Peak kWh",
+    "Off-Peak kWh",
+    *CROSS_BUCKET_COLUMNS,
+    "Weekend kWh",
+    "Overnight kWh",
+]
 NOTE_COLUMNS = [
     "Account number",
     "Year",
@@ -67,6 +84,11 @@ def _numeric_value(group: pd.DataFrame, period: pd.Period, column: str) -> float
     return float(value) if pd.notna(value) else None
 
 
+def _series_number(row: pd.Series, column: str, default: float | None = None) -> float | None:
+    value = pd.to_numeric(pd.Series([row.get(column, default)]), errors="coerce").iloc[0]
+    return float(value) if pd.notna(value) else default
+
+
 def _set_numeric(row: pd.Series, column: str, value: float | None) -> None:
     row[column] = float(max(value, 0.0)) if value is not None and pd.notna(value) else np.nan
 
@@ -82,6 +104,14 @@ def _is_partial(row: pd.Series) -> bool:
 
 def _confidence_for_steps(steps: int) -> str:
     return "Very Low" if steps >= 3 else "Low"
+
+
+def _confidence_rank(confidence: str) -> int:
+    return {"Normal": 3, "Low": 2, "Very Low": 1}.get(str(confidence), 1)
+
+
+def _lower_confidence(*values: str) -> str:
+    return min(values, key=_confidence_rank)
 
 
 def _column_average(group: pd.DataFrame, periods: Sequence[pd.Period], column: str) -> float | None:
@@ -102,6 +132,120 @@ def _guardrail(value: float | None, average: float | None, steps: int) -> float 
     return min(max(value, lower), upper)
 
 
+def _usable_profile_periods(group: pd.DataFrame, target: pd.Period, anchor_periods: Sequence[pd.Period]) -> list[pd.Period]:
+    complete = []
+    fallback = []
+    for period in anchor_periods:
+        if period not in group.index:
+            continue
+        row = group.loc[period]
+        total = _series_number(row, "Total kWh", 0.0) or 0.0
+        if total <= 0:
+            continue
+        fallback.append(period)
+        if not _is_partial(row):
+            complete.append(period)
+    periods = complete or fallback
+    return sorted(periods, key=lambda period: abs(period.ordinal - target.ordinal))[:PROFILE_SOURCE_LIMIT]
+
+
+def _sum_column(group: pd.DataFrame, periods: Sequence[pd.Period], column: str) -> float:
+    if column not in group.columns:
+        return 0.0
+    total = 0.0
+    for period in periods:
+        if period in group.index:
+            total += _numeric_value(group, period, column) or 0.0
+    return float(total)
+
+
+def _safe_ratio(numerator: float, denominator: float) -> float:
+    return float(numerator / denominator) if denominator else 0.0
+
+
+def _ratio_note(periods: Sequence[pd.Period]) -> str:
+    if not periods:
+        return "No reliable category-ratio months were available."
+    return "Category ratios from " + _period_names(periods) + "."
+
+
+def _apply_energy_profile(row: pd.Series, group: pd.DataFrame, target: pd.Period, anchor_periods: Sequence[pd.Period]) -> str:
+    """Allocate estimated total kWh into category buckets using reliable actual-month ratios."""
+    total = _series_number(row, "Total kWh", 0.0) or 0.0
+    if total <= 0:
+        for column in DERIVED_ENERGY_COLUMNS:
+            if column in row:
+                row[column] = 0.0
+        row["Non-Operating %"] = 0.0
+        return "No positive total kWh was available for category allocation."
+
+    profile_periods = _usable_profile_periods(group, target, anchor_periods)
+    profile_total = _sum_column(group, profile_periods, "Total kWh")
+
+    cross_sum = sum(_sum_column(group, profile_periods, column) for column in CROSS_BUCKET_COLUMNS)
+    if cross_sum > 0:
+        cross_values = {
+            column: total * _safe_ratio(_sum_column(group, profile_periods, column), cross_sum)
+            for column in CROSS_BUCKET_COLUMNS
+        }
+        for column, value in cross_values.items():
+            if column in row:
+                row[column] = value
+        row["Operating kWh"] = cross_values["On-Peak Operating kWh"] + cross_values["Off-Peak Operating kWh"]
+        row["Non-Operating kWh"] = cross_values["On-Peak Non-Operating kWh"] + cross_values["Off-Peak Non-Operating kWh"]
+        row["On-Peak kWh"] = cross_values["On-Peak Operating kWh"] + cross_values["On-Peak Non-Operating kWh"]
+        row["Off-Peak kWh"] = cross_values["Off-Peak Operating kWh"] + cross_values["Off-Peak Non-Operating kWh"]
+    elif profile_total > 0:
+        operating = total * _safe_ratio(_sum_column(group, profile_periods, "Operating kWh"), profile_total)
+        on_peak = total * _safe_ratio(_sum_column(group, profile_periods, "On-Peak kWh"), profile_total)
+        row["Operating kWh"] = operating
+        row["Non-Operating kWh"] = max(total - operating, 0.0)
+        row["On-Peak kWh"] = on_peak
+        row["Off-Peak kWh"] = max(total - on_peak, 0.0)
+    else:
+        existing_non_operating = _series_number(row, "Non-Operating kWh", 0.0) or 0.0
+        row["Non-Operating kWh"] = min(existing_non_operating, total)
+        row["Operating kWh"] = max(total - row["Non-Operating kWh"], 0.0)
+
+    for column in ["Weekend kWh", "Overnight kWh"]:
+        if column in row and profile_total > 0:
+            row[column] = total * _safe_ratio(_sum_column(group, profile_periods, column), profile_total)
+
+    non_operating = _series_number(row, "Non-Operating kWh", 0.0) or 0.0
+    row["Non-Operating %"] = 100 * non_operating / total if total else 0.0
+    return _ratio_note(profile_periods)
+
+
+def _quality_score(data_source: str, coverage_status: str, confidence: str, coverage: float | None) -> tuple[int, str]:
+    if data_source == "Actual":
+        if coverage is not None and coverage < 99:
+            return 90, "High"
+        return 100, "High"
+    if coverage_status == "Partial Estimated":
+        score = int(max(15, min(70, round((coverage or 0) * 0.9))))
+        return score, "Low" if score >= 35 else "Very Low"
+    if confidence == "Normal":
+        return 70, "Medium"
+    if confidence == "Low":
+        return 50, "Low"
+    return 25, "Very Low"
+
+
+def _apply_quality(row: pd.Series, data_source: str, coverage_status: str, confidence: str, method: str) -> None:
+    coverage_value = _series_number(row, "Coverage %", None)
+    score, level = _quality_score(data_source, coverage_status, confidence, coverage_value)
+    row["Quality Score"] = score
+    row["Quality Level"] = level
+    if data_source == "Actual":
+        coverage_text = f"{coverage_value:.0f}%" if coverage_value is not None else "complete"
+        row["Quality Notes"] = f"Actual uploaded interval file with {coverage_text} coverage."
+    elif coverage_status == "Partial Estimated":
+        coverage_text = f"{coverage_value:.0f}%" if coverage_value is not None else "partial"
+        row["Quality Notes"] = f"Partial upload ({coverage_text} coverage) blended with complete-month trend and category ratios."
+    else:
+        row["Quality Notes"] = "Missing reporting month estimated from complete uploaded months; no interval rows were fabricated."
+
+
 def _single_month_row(group: pd.DataFrame, target: pd.Period, anchor_periods: list[pd.Period]) -> tuple[pd.Series, str, str]:
     source = anchor_periods[0]
     confidence = "Very Low" if abs(source.ordinal - target.ordinal) > 2 else "Low"
@@ -117,7 +261,7 @@ def _linear_interpolated_row(
     distance = right_period.ordinal - left_period.ordinal
     weight = (target.ordinal - left_period.ordinal) / distance
     row = group.loc[left_period].copy()
-    for column in NUMERIC_ESTIMATE_COLUMNS:
+    for column in PRIMARY_ESTIMATE_COLUMNS:
         if column not in group.columns:
             continue
         left = _numeric_value(group, left_period, column)
@@ -126,9 +270,9 @@ def _linear_interpolated_row(
     gap = distance - 1
     confidence = "Normal" if gap <= 2 else "Low"
     if gap == 1:
-        method = f"Interpolated from {left_period.strftime('%B %Y')} and {right_period.strftime('%B %Y')}"
+        method = f"Interpolated total kWh from {left_period.strftime('%B %Y')} and {right_period.strftime('%B %Y')}"
     else:
-        method = f"Linear interpolation from {left_period.strftime('%B %Y')} to {right_period.strftime('%B %Y')}"
+        method = f"Linear total-kWh interpolation from {left_period.strftime('%B %Y')} to {right_period.strftime('%B %Y')}"
     return row, method, confidence
 
 
@@ -153,7 +297,7 @@ def _trend_extrapolated_row(
 
     distance = abs(anchor.ordinal - neighbor.ordinal) or 1
     row = group.loc[anchor].copy()
-    for column in NUMERIC_ESTIMATE_COLUMNS:
+    for column in PRIMARY_ESTIMATE_COLUMNS:
         if column not in group.columns:
             continue
         anchor_value = _numeric_value(group, anchor, column)
@@ -170,7 +314,7 @@ def _trend_extrapolated_row(
 
     confidence = _confidence_for_steps(steps)
     method = (
-        f"Trend extrapolated {direction} from {anchor.strftime('%B %Y')} "
+        f"Trend extrapolated total kWh {direction} from {anchor.strftime('%B %Y')} "
         f"and {neighbor.strftime('%B %Y')}"
     )
     return row, method, confidence
@@ -200,26 +344,37 @@ def _partial_scaled_row(
     source = group.loc[target].copy()
     coverage = max(_coverage(source), 1.0)
     factor = min(100.0 / coverage, 12.0)
+    uploaded_total = _series_number(source, "Total kWh", 0.0) or 0.0
+    scaled_total = uploaded_total * factor
+
+    trend_row, trend_method, trend_confidence = _estimate_row(group, target, anchor_periods)
+    trend_total = _series_number(trend_row, "Total kWh", None)
+    coverage_weight = min(max(coverage / 100.0, 0.10), 0.65)
+    if trend_total is not None and trend_total > 0:
+        blended_total = scaled_total * coverage_weight + trend_total * (1 - coverage_weight)
+        nearest_steps = min(abs(period.ordinal - target.ordinal) for period in anchor_periods) if anchor_periods else 1
+        anchor_average = _column_average(group, anchor_periods[: min(len(anchor_periods), 5)], "Total kWh")
+        total_estimate = _guardrail(blended_total, anchor_average, nearest_steps)
+    else:
+        total_estimate = scaled_total
+
     row = source.copy()
-    for column in ENERGY_COLUMNS:
-        if column in row:
-            value = pd.to_numeric(pd.Series([row[column]]), errors="coerce").iloc[0]
-            _set_numeric(row, column, float(value) * factor if pd.notna(value) else None)
-    # Peak demand is a kW maximum, not additive energy. Use uploaded demand peaks, but
-    # borrow anchor averages if the partial file has no meaningful demand value.
+    _set_numeric(row, "Total kWh", total_estimate)
     for column in DEMAND_COLUMNS:
         if column not in row:
             continue
-        value = pd.to_numeric(pd.Series([row[column]]), errors="coerce").iloc[0]
-        if pd.isna(value) or float(value) <= 0:
+        value = _series_number(row, column, None)
+        if value is None or value <= 0:
             _set_numeric(row, column, _column_average(group, anchor_periods, column))
-    total = float(row.get("Total kWh", 0) or 0)
-    non_operating = float(row.get("Non-Operating kWh", 0) or 0)
-    row["Non-Operating %"] = 100 * non_operating / total if total else 0.0
+
+    profile_note = _apply_energy_profile(row, group, target, anchor_periods)
     row["Coverage %"] = coverage
     row["Coverage Status"] = "Partial Estimated"
-    confidence = "Very Low" if coverage < 25 else "Low"
-    method = f"Partial-month scale-up from {coverage:.0f}% uploaded coverage; excluded from trend anchors"
+    confidence = _lower_confidence("Very Low" if coverage < 25 else "Low", trend_confidence)
+    method = (
+        f"Partial-month blended estimate from {coverage:.0f}% uploaded coverage and complete-month trend; "
+        f"excluded from trend anchors. {trend_method}. {profile_note}"
+    )
     return row, method, confidence
 
 
@@ -297,24 +452,30 @@ def estimate_missing_months(
                 row["Data Source"] = "Actual"
                 row["Estimate Method"] = "Actual uploaded interval file"
                 row["Confidence"] = "Normal"
+                row["Coverage Status"] = row.get("Coverage Status", "Complete")
+                _apply_quality(row, "Actual", str(row["Coverage Status"]), "Normal", str(row["Estimate Method"]))
             elif period in account_group.index and _is_partial(account_group.loc[period]):
                 row, method, confidence = _partial_scaled_row(account_group, period, anchor_periods)
                 row["Data Source"] = "Estimated"
                 row["Estimate Method"] = method
                 row["Confidence"] = confidence
                 row["Peak During Non-Operating"] = False
+                _apply_quality(row, "Estimated", "Partial Estimated", confidence, method)
                 notes.append(_note(account, period, actual_periods, affected_periods, method, confidence))
             else:
                 row, method, confidence = _estimate_row(account_group, period, anchor_periods)
+                profile_note = _apply_energy_profile(row, account_group, period, anchor_periods)
+                method = f"{method}. {profile_note}"
                 row["Data Source"] = "Estimated"
                 row["Estimate Method"] = method
                 row["Confidence"] = confidence
                 row["Peak During Non-Operating"] = False
-                total = float(row.get("Total kWh", 0) or 0)
-                non_operating = float(row.get("Non-Operating kWh", 0) or 0)
-                row["Non-Operating %"] = 100 * non_operating / total if total else 0.0
                 row["Coverage %"] = np.nan
                 row["Coverage Status"] = "Estimated Missing"
+                row["Uploaded Row Count"] = 0
+                if "Expected Row Count" not in row or pd.isna(row.get("Expected Row Count")):
+                    row["Expected Row Count"] = np.nan
+                _apply_quality(row, "Estimated", "Estimated Missing", confidence, method)
                 notes.append(_note(account, period, actual_periods, affected_periods, method, confidence))
 
             row["Account"] = account

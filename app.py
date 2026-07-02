@@ -13,6 +13,7 @@ from fpl_dashboard.extraction import extract_excel_file
 from fpl_dashboard.processing import find_potential_issues, process_files
 from fpl_dashboard.report_period import (
     account_report_windows,
+    coverage_by_account_period,
     format_window,
     partial_period_warnings,
     report_window,
@@ -42,6 +43,38 @@ def rounded_summary(frame: pd.DataFrame) -> pd.DataFrame:
         elif column.endswith("%"):
             result[column] = pd.to_numeric(result[column], errors="coerce").round(1)
     return result
+
+
+def _month_list(periods: list[pd.Period]) -> str:
+    return ", ".join(period.strftime("%b %Y") for period in periods) if periods else "None"
+
+
+def report_coverage_preview(files, report_windows, interval_overrides) -> pd.DataFrame:
+    coverage = coverage_by_account_period(files, interval_overrides)
+    uploaded_by_account: dict[str, set[pd.Period]] = {}
+    for item in files:
+        if item.errors or item.year is None or item.month is None:
+            continue
+        uploaded_by_account.setdefault(item.account, set()).add(pd.Period(year=int(item.year), month=int(item.month), freq="M"))
+
+    rows = []
+    for account, window in report_windows.items():
+        periods = [pd.Period(period, freq="M") for period in window]
+        uploaded = uploaded_by_account.get(account, set())
+        complete = [period for period in periods if period in uploaded and coverage.get((account, period), 1.0) >= 0.85]
+        partial = [period for period in periods if period in uploaded and coverage.get((account, period), 1.0) < 0.85]
+        missing = [period for period in periods if period not in uploaded]
+        rows.append(
+            {
+                "Account": account,
+                "Report period": format_window(periods),
+                "Complete actual months": _month_list(complete),
+                "Partial months to estimate": _month_list(partial),
+                "Missing months to estimate": _month_list(missing),
+                "Estimated month count": len(partial) + len(missing),
+            }
+        )
+    return pd.DataFrame(rows)
 
 
 if ASSET_PATH.exists():
@@ -169,6 +202,14 @@ else:
         st.warning(message)
     for message in validation_errors:
         st.error(message)
+
+    if report_windows:
+        st.subheader("Report coverage preview")
+        st.caption(
+            "Review this before generating the workbook. Partial months are scaled/blended with nearby complete months; "
+            "missing months are estimated from complete uploaded months."
+        )
+        st.dataframe(report_coverage_preview(extracted_files, report_windows, interval_overrides), use_container_width=True, hide_index=True)
 
     missing = {account: periods for account, periods in missing_months_for_windows(extracted_files, report_windows).items() if periods}
     if missing:

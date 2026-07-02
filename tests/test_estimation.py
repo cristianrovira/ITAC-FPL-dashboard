@@ -1,4 +1,4 @@
-﻿import pandas as pd
+import pandas as pd
 
 from fpl_dashboard.estimation import estimate_missing_months
 from fpl_dashboard.processing import DEMAND_COLUMNS, ENERGY_COLUMNS
@@ -81,7 +81,7 @@ def test_leading_missing_months_use_first_actual_trend_instead_of_flat_copy():
     assert _value(completed, 2025, 9) == 80
     assert _value(completed, 2025, 8) == 90
     september = (completed["Year"] == 2025) & (completed["Month"] == 9)
-    assert "Trend extrapolated backward" in completed.loc[september, "Estimate Method"].iloc[0]
+    assert "Trend extrapolated total kWh backward" in completed.loc[september, "Estimate Method"].iloc[0]
 
 
 def test_selected_report_window_controls_output_months():
@@ -102,11 +102,37 @@ def test_partial_month_is_scaled_and_excluded_from_trend_anchors():
 
     completed, notes = estimate_missing_months(summary, windows)
 
-    assert _value(completed, 2025, 2) == 200
+    assert _value(completed, 2025, 2) == 119
     assert _value(completed, 2025, 1) == 120
     feb = (completed["Year"] == 2025) & (completed["Month"] == 2)
     assert completed.loc[feb, "Data Source"].iloc[0] == "Estimated"
-    assert "Partial-month scale-up" in completed.loc[feb, "Estimate Method"].iloc[0]
+    assert "Partial-month blended estimate" in completed.loc[feb, "Estimate Method"].iloc[0]
+    assert completed.loc[feb, "Quality Level"].iloc[0] == "Very Low"
     jan = (completed["Year"] == 2025) & (completed["Month"] == 1)
     assert "March 2025 and April 2025" in completed.loc[jan, "Estimate Method"].iloc[0]
     assert len(notes) == 2
+
+
+
+def test_estimated_month_allocates_categories_from_total_first():
+    summary = _summary({(2025, 3): 100, (2025, 4): 200})
+    march = (summary["Year"] == 2025) & (summary["Month"] == 3)
+    april = (summary["Year"] == 2025) & (summary["Month"] == 4)
+    summary.loc[march, "On-Peak Operating kWh"] = 10
+    summary.loc[march, "Off-Peak Operating kWh"] = 40
+    summary.loc[march, "On-Peak Non-Operating kWh"] = 20
+    summary.loc[march, "Off-Peak Non-Operating kWh"] = 30
+    summary.loc[april, "On-Peak Operating kWh"] = 20
+    summary.loc[april, "Off-Peak Operating kWh"] = 80
+    summary.loc[april, "On-Peak Non-Operating kWh"] = 40
+    summary.loc[april, "Off-Peak Non-Operating kWh"] = 60
+    windows = {"A": pd.period_range("2025-02", "2025-04", freq="M")}
+
+    completed, _ = estimate_missing_months(summary, windows)
+    row = completed[(completed["Year"] == 2025) & (completed["Month"] == 2)].iloc[0]
+
+    assert row["Total kWh"] == 82.5
+    assert row["Operating kWh"] + row["Non-Operating kWh"] == row["Total kWh"]
+    assert row["On-Peak Operating kWh"] + row["Off-Peak Operating kWh"] == row["Operating kWh"]
+    assert row["On-Peak Non-Operating kWh"] + row["Off-Peak Non-Operating kWh"] == row["Non-Operating kWh"]
+    assert "Category ratios from" in row["Estimate Method"]

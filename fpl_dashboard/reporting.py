@@ -78,6 +78,9 @@ def data_quality_summary(monthly_display: pd.DataFrame, input_file_log: pd.DataF
         "Coverage %",
         "Uploaded Row Count",
         "Expected Row Count",
+        "Quality Score",
+        "Quality Level",
+        "Quality Notes",
         "Estimate Method",
         "Confidence",
     ]
