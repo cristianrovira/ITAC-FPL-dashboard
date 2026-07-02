@@ -1,7 +1,7 @@
 import pandas as pd
 
 from fpl_dashboard.extraction import ExtractedFile
-from fpl_dashboard.report_period import account_report_windows, format_window, partial_period_warnings, report_window, suggested_report_end
+from fpl_dashboard.report_period import account_report_windows, format_window, partial_period_warnings, report_window, suggested_report_end, suggested_report_end_options
 
 
 def _file(period: str, rows: int = 2880, interval: float = 0.25):
@@ -37,3 +37,9 @@ def test_partial_period_warning_flags_short_file():
 def test_format_window_accepts_period_index():
     window = report_window(pd.Period("2026-02", freq="M"))
     assert format_window(window) == "March 2025 through February 2026"
+
+
+def test_suggested_report_end_options_include_latest_partial_month():
+    files = [_file("2025-07", rows=2880), _file("2025-08", rows=960)]
+    options = suggested_report_end_options(files)
+    assert [period for period, _ in options] == [pd.Period("2025-07", freq="M"), pd.Period("2025-08", freq="M")]

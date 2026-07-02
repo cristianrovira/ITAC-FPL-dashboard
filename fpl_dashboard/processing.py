@@ -9,6 +9,7 @@ import pandas as pd
 
 from .classification import classify_on_peak, classify_operating, is_around_the_clock_schedule
 from .extraction import ExtractedFile
+from .report_period import coverage_by_account_period
 from .validation import FileKey, selected_demand_columns
 
 
@@ -18,6 +19,10 @@ ENERGY_COLUMNS = [
     "Non-Operating kWh",
     "On-Peak kWh",
     "Off-Peak kWh",
+    "On-Peak Operating kWh",
+    "Off-Peak Operating kWh",
+    "On-Peak Non-Operating kWh",
+    "Off-Peak Non-Operating kWh",
     "Weekend kWh",
     "Overnight kWh",
 ]
@@ -98,6 +103,10 @@ def summarize_actual_intervals(frame: pd.DataFrame) -> pd.DataFrame:
             "Non-Operating Demand kW": _masked_max(group, ~operating),
             "On-Peak kWh": _masked_sum(group, on_peak),
             "Off-Peak kWh": _masked_sum(group, ~on_peak),
+            "On-Peak Operating kWh": _masked_sum(group, operating & on_peak),
+            "Off-Peak Operating kWh": _masked_sum(group, operating & ~on_peak),
+            "On-Peak Non-Operating kWh": _masked_sum(group, ~operating & on_peak),
+            "Off-Peak Non-Operating kWh": _masked_sum(group, ~operating & ~on_peak),
             "On-Peak Demand kW": _masked_max(group, on_peak),
             "Off-Peak Demand kW": _masked_max(group, ~on_peak),
             "Weekend kWh": _masked_sum(group, group["Weekend"]),
@@ -129,7 +138,32 @@ def process_files(
     if not normalized_files:
         raise ValueError("No valid interval data is available to process.")
     interval_data = classify_intervals(pd.concat(normalized_files, ignore_index=True), shifts)
-    return interval_data, summarize_actual_intervals(interval_data)
+    summary = summarize_actual_intervals(interval_data)
+    coverage = coverage_by_account_period(files, interval_overrides)
+    uploaded_rows: dict[tuple[str, int, int], int] = {}
+    for item in files:
+        if item.errors or item.year is None or item.month is None:
+            continue
+        key = (item.account, int(item.year), int(item.month))
+        uploaded_rows[key] = uploaded_rows.get(key, 0) + int(item.row_count or 0)
+
+    coverage_values = []
+    coverage_statuses = []
+    row_counts = []
+    expected_rows = []
+    for row in summary.itertuples(index=False):
+        period = pd.Period(year=int(row.Year), month=int(row.Month), freq="M")
+        ratio = coverage.get((row.Account, period), 1.0)
+        coverage_values.append(round(float(ratio) * 100, 1))
+        coverage_statuses.append("Partial" if ratio < 0.85 else "Complete")
+        row_count = uploaded_rows.get((row.Account, int(row.Year), int(row.Month)), 0)
+        row_counts.append(row_count)
+        expected_rows.append(round(row_count / ratio) if ratio else 0)
+    summary["Coverage %"] = coverage_values
+    summary["Coverage Status"] = coverage_statuses
+    summary["Uploaded Row Count"] = row_counts
+    summary["Expected Row Count"] = expected_rows
+    return interval_data, summary
 
 
 def find_potential_issues(summary: pd.DataFrame) -> list[str]:

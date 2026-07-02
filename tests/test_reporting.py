@@ -19,6 +19,10 @@ def _monthly_summary():
                 "Confidence": "Normal",
                 "Peak During Non-Operating": False,
                 "Non-Operating %": 20.0,
+                "Coverage %": 100.0,
+                "Coverage Status": "Complete",
+                "Uploaded Row Count": 2880,
+                "Expected Row Count": 2880,
             }
             for column in ENERGY_COLUMNS + DEMAND_COLUMNS:
                 row[column] = 100.0
@@ -33,6 +37,8 @@ def test_excel_report_contains_required_sheets_with_estimates():
     workbook = pd.ExcelFile(BytesIO(content))
     required = {
         "Monthly Summary",
+        "Official Dashboard",
+        "Data Quality",
         "Operating vs Non-Operating",
         "On-Peak vs Off-Peak Summary",
         "Demand Summary",
@@ -45,3 +51,7 @@ def test_excel_report_contains_required_sheets_with_estimates():
     assert required.issubset(set(workbook.sheet_names))
     monthly = pd.read_excel(BytesIO(content), sheet_name="Monthly Summary")
     assert "Estimated" in set(monthly["Data Source"])
+    official = pd.read_excel(BytesIO(content), sheet_name="Official Dashboard")
+    assert "On Peak Operating (kWh)" in official.columns
+    quality = pd.read_excel(BytesIO(content), sheet_name="Data Quality")
+    assert "Coverage Status" in quality.columns

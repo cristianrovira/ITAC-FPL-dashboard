@@ -47,6 +47,46 @@ def _display_frame(frame: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+def official_dashboard_summary(monthly_display: pd.DataFrame) -> pd.DataFrame:
+    result = pd.DataFrame()
+    mappings = [
+        ("Account", "Account"),
+        ("Month / Year", "Month"),
+        ("Non-Operating kWh", "Not Operating"),
+        ("Operating kWh", "Operating Shift"),
+        ("Total kWh", "Total kWh"),
+        ("On-Peak Operating kWh", "On Peak Operating (kWh)"),
+        ("Off-Peak Operating kWh", "Off Peak Operating"),
+        ("On-Peak Non-Operating kWh", "On Peak Not Operating"),
+        ("Off-Peak Non-Operating kWh", "Off Peak Not Operating"),
+        ("Total kWh", "Total kWh Check"),
+        ("Data Source", "Data Source"),
+        ("Confidence", "Confidence"),
+    ]
+    for source, label in mappings:
+        if source in monthly_display:
+            result[label] = monthly_display[source]
+    return result
+
+
+def data_quality_summary(monthly_display: pd.DataFrame, input_file_log: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "Account",
+        "Month / Year",
+        "Data Source",
+        "Coverage Status",
+        "Coverage %",
+        "Uploaded Row Count",
+        "Expected Row Count",
+        "Estimate Method",
+        "Confidence",
+    ]
+    quality = monthly_display[[column for column in columns if column in monthly_display]].copy()
+    if input_file_log.empty:
+        return quality
+    return quality
+
+
 def create_excel_report(
     monthly_summary: pd.DataFrame,
     input_file_log: pd.DataFrame,
@@ -59,6 +99,8 @@ def create_excel_report(
 
     sheets: list[tuple[str, pd.DataFrame]] = [
         ("Monthly Summary", monthly_display),
+        ("Official Dashboard", official_dashboard_summary(monthly_display)),
+        ("Data Quality", data_quality_summary(monthly_display, input_file_log)),
         (
             "Operating vs Non-Operating",
             monthly_display[[column for column in ["Account", "Month / Year", "Operating kWh", "Non-Operating kWh", "Operating Demand kW", "Non-Operating Demand kW", "Non-Operating %", "Data Source", "Confidence"] if column in monthly_display]],

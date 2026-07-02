@@ -75,6 +75,23 @@ def suggested_report_end(
     return max(periods) if periods else None
 
 
+def suggested_report_end_options(
+    files: Sequence[ExtractedFile],
+    interval_overrides: Mapping[FileKey, float] | None = None,
+    complete_threshold: float = 0.85,
+) -> list[tuple[pd.Period, str]]:
+    """Return likely report-end options, including partial latest uploads."""
+    latest_complete = suggested_report_end(files, interval_overrides, complete_threshold)
+    valid_periods = [assigned_period(item) for item in files if not item.errors and assigned_period(item) is not None]
+    latest_uploaded = max(valid_periods) if valid_periods else None
+    options: list[tuple[pd.Period, str]] = []
+    if latest_complete is not None:
+        options.append((latest_complete, "Latest reasonably complete uploaded month"))
+    if latest_uploaded is not None and latest_uploaded != latest_complete:
+        options.append((latest_uploaded, "Include latest partial uploaded month"))
+    return options
+
+
 def report_window(end: pd.Period, months: int = 12) -> pd.PeriodIndex:
     return pd.period_range(end=end, periods=months, freq="M")
 

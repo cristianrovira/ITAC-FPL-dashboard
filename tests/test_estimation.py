@@ -1,4 +1,4 @@
-import pandas as pd
+﻿import pandas as pd
 
 from fpl_dashboard.estimation import estimate_missing_months
 from fpl_dashboard.processing import DEMAND_COLUMNS, ENERGY_COLUMNS
@@ -89,3 +89,24 @@ def test_selected_report_window_controls_output_months():
     completed, _ = estimate_missing_months(_summary({(2025, 10): 70, (2025, 11): 60}), windows)
     periods = pd.PeriodIndex.from_fields(year=completed["Year"], month=completed["Month"], freq="M")
     assert list(periods) == list(windows["A"])
+
+
+def test_partial_month_is_scaled_and_excluded_from_trend_anchors():
+    summary = _summary({(2025, 2): 20, (2025, 3): 100, (2025, 4): 90})
+    partial = (summary["Year"] == 2025) & (summary["Month"] == 2)
+    summary.loc[partial, "Coverage %"] = 10.0
+    summary.loc[partial, "Coverage Status"] = "Partial"
+    summary.loc[~partial, "Coverage %"] = 100.0
+    summary.loc[~partial, "Coverage Status"] = "Complete"
+    windows = {"A": pd.period_range("2025-01", "2025-04", freq="M")}
+
+    completed, notes = estimate_missing_months(summary, windows)
+
+    assert _value(completed, 2025, 2) == 200
+    assert _value(completed, 2025, 1) == 120
+    feb = (completed["Year"] == 2025) & (completed["Month"] == 2)
+    assert completed.loc[feb, "Data Source"].iloc[0] == "Estimated"
+    assert "Partial-month scale-up" in completed.loc[feb, "Estimate Method"].iloc[0]
+    jan = (completed["Year"] == 2025) & (completed["Month"] == 1)
+    assert "March 2025 and April 2025" in completed.loc[jan, "Estimate Method"].iloc[0]
+    assert len(notes) == 2

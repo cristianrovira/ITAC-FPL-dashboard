@@ -17,6 +17,7 @@ from fpl_dashboard.report_period import (
     partial_period_warnings,
     report_window,
     suggested_report_end,
+    suggested_report_end_options,
 )
 from fpl_dashboard.reporting import create_excel_report
 from fpl_dashboard.schedule_ui import configure_schedule
@@ -123,12 +124,17 @@ else:
             interval_overrides[(item.account, item.filename)] = INTERVAL_LABELS[selected_label]
 
     st.subheader("Report period")
-    suggested_end = suggested_report_end(extracted_files, interval_overrides)
+    suggested_options = suggested_report_end_options(extracted_files, interval_overrides)
+    suggested_end = suggested_options[0][0] if suggested_options else suggested_report_end(extracted_files, interval_overrides)
     report_windows = {}
     if suggested_end is not None:
-        suggested_window = report_window(suggested_end)
-        st.info(f"Detected report period: {format_window(suggested_window)}.")
         report_end_period = suggested_end
+        if len(suggested_options) > 1:
+            labels = [f"{format_window(report_window(period))} ({reason})" for period, reason in suggested_options]
+            selected = st.radio("Detected likely report periods", labels, index=0)
+            report_end_period = suggested_options[labels.index(selected)][0]
+        suggested_window = report_window(report_end_period)
+        st.info(f"Detected report period: {format_window(suggested_window)}.")
         if st.checkbox("Change detected report period"):
             assigned_periods = sorted(
                 {
