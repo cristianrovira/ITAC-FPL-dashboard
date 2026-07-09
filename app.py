@@ -77,6 +77,49 @@ def report_coverage_preview(files, report_windows, interval_overrides) -> pd.Dat
     return pd.DataFrame(rows)
 
 
+
+
+def classification_preview(summary: pd.DataFrame) -> pd.DataFrame:
+    if summary.empty:
+        return pd.DataFrame()
+    grouped = summary.groupby("Account", sort=True).agg(
+        **{
+            "Actual months": ("Month", "count"),
+            "Total kWh": ("Total kWh", "sum"),
+            "Operating kWh": ("Operating kWh", "sum"),
+            "Not Operating kWh": ("Non-Operating kWh", "sum"),
+            "On-Peak kWh": ("On-Peak kWh", "sum"),
+            "Off-Peak kWh": ("Off-Peak kWh", "sum"),
+        }
+    ).reset_index()
+    grouped["Operating %"] = 100 * grouped["Operating kWh"] / grouped["Total kWh"].replace(0, pd.NA)
+    grouped["Not Operating %"] = 100 * grouped["Not Operating kWh"] / grouped["Total kWh"].replace(0, pd.NA)
+    grouped["On-Peak %"] = 100 * grouped["On-Peak kWh"] / grouped["Total kWh"].replace(0, pd.NA)
+    grouped["Off-Peak %"] = 100 * grouped["Off-Peak kWh"] / grouped["Total kWh"].replace(0, pd.NA)
+    for column in grouped.columns:
+        if column.endswith("kWh"):
+            grouped[column] = pd.to_numeric(grouped[column], errors="coerce").round(0)
+        elif column.endswith("%"):
+            grouped[column] = pd.to_numeric(grouped[column], errors="coerce").round(1)
+    return grouped
+
+
+def schedule_diagnostics(shifts: list[dict[str, object]], schedule_rows: pd.DataFrame) -> pd.DataFrame:
+    records = []
+    for shift in shifts:
+        records.append(
+            {
+                "Shift name": shift.get("name"),
+                "Days": ", ".join(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][day] for day in shift.get("days", [])),
+                "Start time": shift.get("start").strftime("%I:%M %p") if shift.get("start") else "Invalid",
+                "End time": shift.get("end").strftime("%I:%M %p") if shift.get("end") else "Invalid",
+                "Active": bool(shift.get("active", True)),
+                "Valid": bool(shift.get("valid", False)),
+            }
+        )
+    return pd.DataFrame(records) if records else schedule_rows.copy()
+
+
 if ASSET_PATH.exists():
     st.image(str(ASSET_PATH), width=280)
 st.title("ITAC FPL Dashboard Analysis Tool")
@@ -103,9 +146,68 @@ for account_index in range(account_count):
     uploaded_by_account.append((account_name, list(uploads or [])))
 
 st.header("Step 2: Configure Operating Schedule")
-shifts, _ = configure_schedule()
-if not any(shift["active"] for shift in shifts) or not any(shift["days"] for shift in shifts if shift["active"]):
-    st.warning("At least one active shift and one operating day are required.")
+shifts, schedule_rows = configure_schedule()
+
+st.subheader("Operating classification")
+classification_label = st.selectbox(
+    "How should operating vs not-operating intervals be classified?",
+    [
+        "Fixed shift schedule",
+        "Continuous facility / idle-load detection",
+        "Hybrid: schedule plus idle-load detection",
+    ],
+    index=0,
+    help=(
+        "Use idle-load detection for facilities that run nearly continuously. "
+        "It marks the lowest-load intervals as not operating instead of treating all nights/weekends as off-hours."
+    ),
+)
+classification_mode = {
+    "Fixed shift schedule": "fixed_schedule",
+    "Continuous facility / idle-load detection": "idle_load",
+    "Hybrid: schedule plus idle-load detection": "hybrid",
+}[classification_label]
+idle_quantile = 0.15
+if classification_mode in {"idle_load", "hybrid"}:
+    idle_quantile = st.slider(
+        "Idle-load cutoff percentile",
+        min_value=5,
+        max_value=30,
+        value=15,
+        step=1,
+        help="Intervals at or below this demand percentile are treated as idle/not operating. 15% is a good starting point for continuous facilities.",
+    ) / 100
+
+timestamp_alignment_label = st.selectbox(
+    "Timestamp alignment for classification",
+    [
+        "Timestamps mark interval start",
+        "Use interval midpoint",
+        "Timestamps mark interval end",
+    ],
+    index=0,
+    help="If FPL timestamps label the end of each interval, choose interval end so boundary times classify correctly.",
+)
+timestamp_alignment = {
+    "Timestamps mark interval start": "start",
+    "Use interval midpoint": "midpoint",
+    "Timestamps mark interval end": "end",
+}[timestamp_alignment_label]
+on_peak_rule_label = st.selectbox(
+    "On/off-peak rule",
+    ["Exact FPL-style time windows", "Legacy whole-hour windows"],
+    index=0,
+)
+classification_options = {
+    "operating_mode": classification_mode,
+    "idle_quantile": idle_quantile,
+    "timestamp_alignment": timestamp_alignment,
+    "on_peak_rule": "exact" if on_peak_rule_label == "Exact FPL-style time windows" else "legacy_whole_hour",
+}
+if classification_mode == "fixed_schedule" and (
+    not any(shift["active"] for shift in shifts) or not any(shift["days"] for shift in shifts if shift["active"])
+):
+    st.warning("At least one active shift and one operating day are required for fixed-schedule classification.")
 
 st.header("Step 3: Confirm Detected Data")
 all_uploads = [(account, upload) for account, uploads in uploaded_by_account for upload in uploads]
@@ -211,6 +313,42 @@ else:
         )
         st.dataframe(report_coverage_preview(extracted_files, report_windows, interval_overrides), use_container_width=True, hide_index=True)
 
+    active_schedule = classification_mode == "idle_load" or any(
+        shift["active"] and shift["days"] and shift.get("valid", True) for shift in shifts
+    )
+    can_preview = not validation_errors and active_schedule and bool(extracted_files)
+    if st.button("Preview classification percentages", disabled=not can_preview):
+        try:
+            _, preview_summary = process_files(
+                extracted_files,
+                shifts,
+                demand_selections,
+                interval_overrides,
+                classification_options,
+            )
+            st.dataframe(classification_preview(preview_summary), use_container_width=True, hide_index=True)
+        except Exception as exc:
+            st.error(f"Classification preview failed: {exc}")
+
+    st.subheader("Generation readiness checklist")
+    detected_months = sorted(
+        {
+            pd.Period(year=int(item.year), month=int(item.month), freq="M")
+            for item in extracted_files
+            if item.year is not None and item.month is not None and not item.errors
+        }
+    )
+    st.write("Detected uploaded months: " + (_month_list(detected_months) if detected_months else "None"))
+    st.write("Selected interval assumption: " + (", ".join(sorted({interval_label(value) for value in detected_values if value is not None})) or "Not detected"))
+    st.write(f"Timestamp alignment: {timestamp_alignment_label}")
+    st.write(f"Operating classification: {classification_label}")
+    if classification_mode in {"idle_load", "hybrid"}:
+        st.write(f"Idle-load cutoff percentile: {idle_quantile:.0%}")
+    st.write(f"On/off-peak rule: {on_peak_rule_label}")
+    st.write("Configured active shifts:")
+    st.dataframe(schedule_diagnostics(shifts, schedule_rows), use_container_width=True, hide_index=True)
+    confirm_readiness = st.checkbox("I reviewed the report period, interval, timestamp, and classification assumptions.")
+
     missing = {account: periods for account, periods in missing_months_for_windows(extracted_files, report_windows).items() if periods}
     if missing:
         for account, periods in missing.items():
@@ -225,15 +363,18 @@ else:
     else:
         confirm_estimation = True
 
-    active_schedule = any(shift["active"] and shift["days"] and shift.get("valid", True) for shift in shifts)
-    can_generate = not validation_errors and confirm_estimation and active_schedule
+    can_generate = not validation_errors and confirm_estimation and confirm_readiness and active_schedule
     if st.button("Generate Dashboard", type="primary", disabled=not can_generate):
         try:
             interval_data, actual_summary = process_files(
-                extracted_files, shifts, demand_selections, interval_overrides
+                extracted_files,
+                shifts,
+                demand_selections,
+                interval_overrides,
+                classification_options,
             )
             complete_summary, estimation_notes = estimate_missing_months(actual_summary, report_windows)
-            report = create_excel_report(complete_summary, file_log, estimation_notes)
+            report = create_excel_report(complete_summary, file_log, estimation_notes, interval_data)
             st.session_state["analysis_result"] = {
                 "summary": complete_summary,
                 "interval_data": interval_data,

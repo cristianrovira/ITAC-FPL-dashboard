@@ -7,7 +7,15 @@ from typing import Mapping, Sequence
 import numpy as np
 import pandas as pd
 
-from .classification import classify_on_peak, classify_operating, is_around_the_clock_schedule
+from .classification import (
+    apply_timestamp_alignment,
+    classify_idle_load,
+    classify_on_peak,
+    classify_operating,
+    idle_load_threshold,
+    is_around_the_clock_schedule,
+    normalize_classification_options,
+)
 from .extraction import ExtractedFile
 from .report_period import coverage_by_account_period
 from .validation import FileKey, selected_demand_columns
@@ -70,15 +78,51 @@ def normalize_file(
     return normalized
 
 
-def classify_intervals(frame: pd.DataFrame, shifts: Sequence[Mapping[str, object]]) -> pd.DataFrame:
+def classify_intervals(
+    frame: pd.DataFrame,
+    shifts: Sequence[Mapping[str, object]],
+    classification_options: Mapping[str, object] | None = None,
+) -> pd.DataFrame:
     result = frame.copy()
-    if is_around_the_clock_schedule(shifts):
-        result["Operating"] = pd.Series(True, index=result.index, dtype=bool)
+    options = normalize_classification_options(classification_options)
+    result["Classification Timestamp"] = apply_timestamp_alignment(
+        result["Timestamp"],
+        result.get("Interval Hours", 0.0),
+        str(options["timestamp_alignment"]),
+    )
+
+    mode = str(options["operating_mode"])
+    if mode == "idle_load":
+        result["Operating"] = False
+        result["Idle Threshold kW"] = np.nan
+        for account, account_index in result.groupby("Account").groups.items():
+            demand = result.loc[account_index, "Demand kW"]
+            threshold = idle_load_threshold(demand, float(options["idle_quantile"]))
+            result.loc[account_index, "Idle Threshold kW"] = threshold
+            result.loc[account_index, "Operating"] = classify_idle_load(demand, float(options["idle_quantile"])).values
+        result["Operating"] = result["Operating"].astype(bool)
     else:
-        result["Operating"] = classify_operating(result["Timestamp"], shifts)
-    result["On-Peak"] = classify_on_peak(result["Timestamp"])
-    result["Weekend"] = result["Timestamp"].dt.weekday >= 5
-    result["Overnight"] = (result["Timestamp"].dt.hour < 6) | (result["Timestamp"].dt.hour >= 22)
+        if is_around_the_clock_schedule(shifts):
+            scheduled = pd.Series(True, index=result.index, dtype=bool)
+        else:
+            scheduled = classify_operating(result["Classification Timestamp"], shifts)
+        if mode == "hybrid":
+            idle = pd.Series(False, index=result.index, dtype=bool)
+            result["Idle Threshold kW"] = np.nan
+            for account, account_index in result.groupby("Account").groups.items():
+                demand = result.loc[account_index, "Demand kW"]
+                threshold = idle_load_threshold(demand, float(options["idle_quantile"]))
+                result.loc[account_index, "Idle Threshold kW"] = threshold
+                idle.loc[account_index] = classify_idle_load(demand, float(options["idle_quantile"])).values
+            result["Operating"] = (scheduled | idle).astype(bool)
+        else:
+            result["Operating"] = scheduled.astype(bool)
+            result["Idle Threshold kW"] = np.nan
+
+    result["Classification Mode"] = mode
+    result["On-Peak"] = classify_on_peak(result["Classification Timestamp"], str(options["on_peak_rule"]))
+    result["Weekend"] = result["Classification Timestamp"].dt.weekday >= 5
+    result["Overnight"] = (result["Classification Timestamp"].dt.hour < 6) | (result["Classification Timestamp"].dt.hour >= 22)
     if "Year" not in result or "Month" not in result:
         result["Year"] = result["Timestamp"].dt.year.astype(int)
         result["Month"] = result["Timestamp"].dt.month.astype(int)
@@ -95,6 +139,9 @@ def summarize_actual_intervals(frame: pd.DataFrame) -> pd.DataFrame:
             "Account": account,
             "Year": int(year),
             "Month": int(month),
+            "Total Rows": int(len(group)),
+            "Operating Rows": int(operating.sum()),
+            "Not Operating Rows": int((~operating).sum()),
             "Total kWh": float(group["Interval kWh"].sum()),
             "Peak Demand kW": float(group["Demand kW"].max()),
             "Operating kWh": _masked_sum(group, operating),
@@ -126,6 +173,7 @@ def process_files(
     shifts: Sequence[Mapping[str, object]],
     demand_selections: Mapping[FileKey, Sequence[str]] | None = None,
     interval_overrides: Mapping[FileKey, float] | None = None,
+    classification_options: Mapping[str, object] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     normalized_files: list[pd.DataFrame] = []
     for item in files:
@@ -137,7 +185,11 @@ def process_files(
         normalized_files.append(normalize_file(item, demand_columns, float(interval)))
     if not normalized_files:
         raise ValueError("No valid interval data is available to process.")
-    interval_data = classify_intervals(pd.concat(normalized_files, ignore_index=True), shifts)
+    interval_data = classify_intervals(
+        pd.concat(normalized_files, ignore_index=True),
+        shifts,
+        classification_options,
+    )
     summary = summarize_actual_intervals(interval_data)
     coverage = coverage_by_account_period(files, interval_overrides)
     uploaded_rows: dict[tuple[str, int, int], int] = {}
@@ -164,6 +216,53 @@ def process_files(
     summary["Uploaded Row Count"] = row_counts
     summary["Expected Row Count"] = expected_rows
     return interval_data, summary
+
+
+def daily_hourly_classification_breakdown(interval_data: pd.DataFrame) -> pd.DataFrame:
+    """Return actual interval classification diagnostics by day of week and hour."""
+    if interval_data.empty:
+        return pd.DataFrame()
+    frame = interval_data.copy()
+    frame["Day of Week"] = frame["Classification Timestamp"].dt.day_name()
+    frame["Weekday Number"] = frame["Classification Timestamp"].dt.weekday
+    frame["Hour"] = frame["Classification Timestamp"].dt.hour
+    frame["Operating kWh"] = frame["Interval kWh"].where(frame["Operating"], 0.0)
+    frame["Not Operating kWh"] = frame["Interval kWh"].where(~frame["Operating"], 0.0)
+    frame["On-Peak Operating kWh"] = frame["Interval kWh"].where(frame["Operating"] & frame["On-Peak"], 0.0)
+    frame["Off-Peak Operating kWh"] = frame["Interval kWh"].where(frame["Operating"] & ~frame["On-Peak"], 0.0)
+    frame["On-Peak Not Operating kWh"] = frame["Interval kWh"].where(~frame["Operating"] & frame["On-Peak"], 0.0)
+    frame["Off-Peak Not Operating kWh"] = frame["Interval kWh"].where(~frame["Operating"] & ~frame["On-Peak"], 0.0)
+    grouped = frame.groupby(["Account", "Weekday Number", "Day of Week", "Hour"], sort=True).agg(
+        **{
+            "Total Rows": ("Interval kWh", "count"),
+            "Operating Rows": ("Operating", "sum"),
+            "Total kWh": ("Interval kWh", "sum"),
+            "Operating kWh": ("Operating kWh", "sum"),
+            "Not Operating kWh": ("Not Operating kWh", "sum"),
+            "On-Peak Operating kWh": ("On-Peak Operating kWh", "sum"),
+            "Off-Peak Operating kWh": ("Off-Peak Operating kWh", "sum"),
+            "On-Peak Not Operating kWh": ("On-Peak Not Operating kWh", "sum"),
+            "Off-Peak Not Operating kWh": ("Off-Peak Not Operating kWh", "sum"),
+        }
+    ).reset_index()
+    grouped["Not Operating Rows"] = grouped["Total Rows"] - grouped["Operating Rows"]
+    ordered = [
+        "Account",
+        "Weekday Number",
+        "Day of Week",
+        "Hour",
+        "Total Rows",
+        "Operating Rows",
+        "Not Operating Rows",
+        "Total kWh",
+        "Operating kWh",
+        "Not Operating kWh",
+        "On-Peak Operating kWh",
+        "Off-Peak Operating kWh",
+        "On-Peak Not Operating kWh",
+        "Off-Peak Not Operating kWh",
+    ]
+    return grouped[ordered]
 
 
 def find_potential_issues(summary: pd.DataFrame) -> list[str]:

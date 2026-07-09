@@ -23,6 +23,9 @@ def _monthly_summary():
                 "Coverage Status": "Complete",
                 "Uploaded Row Count": 2880,
                 "Expected Row Count": 2880,
+                "Total Rows": 2880,
+                "Operating Rows": 2400,
+                "Not Operating Rows": 480,
             }
             for column in ENERGY_COLUMNS + DEMAND_COLUMNS:
                 row[column] = 100.0
@@ -44,6 +47,8 @@ def test_excel_report_contains_required_sheets_with_estimates():
         "Demand Summary",
         "Account-Level Summary",
         "Consolidated Summary",
+        "Classification Audit",
+        "Daily Hourly Breakdown",
         "Input File Log",
         "Estimation Notes",
         "Chart Data",
@@ -55,3 +60,5 @@ def test_excel_report_contains_required_sheets_with_estimates():
     assert "On Peak Operating (kWh)" in official.columns
     quality = pd.read_excel(BytesIO(content), sheet_name="Data Quality")
     assert "Coverage Status" in quality.columns
+    audit = pd.read_excel(BytesIO(content), sheet_name="Classification Audit")
+    assert "Operating Rows" in audit.columns

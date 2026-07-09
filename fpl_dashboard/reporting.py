@@ -6,7 +6,7 @@ from io import BytesIO
 
 import pandas as pd
 
-from .processing import DEMAND_COLUMNS, ENERGY_COLUMNS
+from .processing import DEMAND_COLUMNS, ENERGY_COLUMNS, daily_hourly_classification_breakdown
 
 
 def consolidated_summary(monthly: pd.DataFrame) -> pd.DataFrame:
@@ -90,10 +90,31 @@ def data_quality_summary(monthly_display: pd.DataFrame, input_file_log: pd.DataF
     return quality
 
 
+def classification_audit_summary(monthly_display: pd.DataFrame) -> pd.DataFrame:
+    columns = [
+        "Account",
+        "Month / Year",
+        "Total Rows",
+        "Operating Rows",
+        "Not Operating Rows",
+        "Operating kWh",
+        "Non-Operating kWh",
+        "On-Peak Operating kWh",
+        "Off-Peak Operating kWh",
+        "On-Peak Non-Operating kWh",
+        "Off-Peak Non-Operating kWh",
+        "Data Source",
+        "Estimate Method",
+        "Confidence",
+    ]
+    return monthly_display[[column for column in columns if column in monthly_display]].copy()
+
+
 def create_excel_report(
     monthly_summary: pd.DataFrame,
     input_file_log: pd.DataFrame,
     estimation_notes: pd.DataFrame,
+    interval_data: pd.DataFrame | None = None,
 ) -> bytes:
     """Create the complete report workbook in memory."""
     account_count = monthly_summary["Account"].nunique() if not monthly_summary.empty else 0
@@ -104,6 +125,7 @@ def create_excel_report(
         ("Monthly Summary", monthly_display),
         ("Official Dashboard", official_dashboard_summary(monthly_display)),
         ("Data Quality", data_quality_summary(monthly_display, input_file_log)),
+        ("Classification Audit", classification_audit_summary(monthly_display)),
         (
             "Operating vs Non-Operating",
             monthly_display[[column for column in ["Account", "Month / Year", "Operating kWh", "Non-Operating kWh", "Operating Demand kW", "Non-Operating Demand kW", "Non-Operating %", "Data Source", "Confidence"] if column in monthly_display]],
@@ -124,8 +146,10 @@ def create_excel_report(
                 ("Consolidated Summary", _display_frame(consolidated)),
             ]
         )
+    diagnostic_breakdown = daily_hourly_classification_breakdown(interval_data) if interval_data is not None else pd.DataFrame()
     sheets.extend(
         [
+            ("Daily Hourly Breakdown", diagnostic_breakdown),
             ("Input File Log", input_file_log.copy()),
             ("Estimation Notes", estimation_notes.copy()),
             ("Chart Data", monthly_display.copy()),

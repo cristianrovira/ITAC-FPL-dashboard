@@ -2,7 +2,14 @@ from datetime import time
 
 import pandas as pd
 
-from fpl_dashboard.classification import classify_operating, is_on_peak, is_operating
+from fpl_dashboard.classification import (
+    apply_timestamp_alignment,
+    classify_idle_load,
+    classify_operating,
+    idle_load_threshold,
+    is_on_peak,
+    is_operating,
+)
 
 
 def test_operating_and_non_operating_classification():
@@ -43,3 +50,44 @@ def test_legacy_on_peak_classification():
     assert is_on_peak(pd.Timestamp("2025-01-02 07:00"))
     assert is_on_peak(pd.Timestamp("2025-01-02 19:00"))
     assert not is_on_peak(pd.Timestamp("2025-01-04 19:00"))  # Saturday
+
+
+
+def test_exact_on_peak_excludes_boundary_end_times():
+    assert is_on_peak(pd.Timestamp("2025-07-02 12:00"))
+    assert not is_on_peak(pd.Timestamp("2025-07-02 21:00"))
+    assert is_on_peak(pd.Timestamp("2025-01-02 06:00"))
+    assert not is_on_peak(pd.Timestamp("2025-01-02 10:00"))
+    assert is_on_peak(pd.Timestamp("2025-01-02 18:00"))
+    assert not is_on_peak(pd.Timestamp("2025-01-02 22:00"))
+
+
+def test_timestamp_alignment_can_use_interval_end_or_midpoint():
+    timestamps = pd.Series(pd.to_datetime(["2025-06-02 08:15"]))
+    intervals = pd.Series([0.25])
+    assert apply_timestamp_alignment(timestamps, intervals, "end").iloc[0] == pd.Timestamp("2025-06-02 08:00")
+    assert apply_timestamp_alignment(timestamps, intervals, "midpoint").iloc[0] == pd.Timestamp("2025-06-02 08:22:30")
+
+
+def test_idle_load_classification_uses_demand_cutoff():
+    demand = pd.Series([100, 120, 150, 300, 350])
+    threshold = idle_load_threshold(demand, 0.40)
+    classified = classify_idle_load(demand, 0.40)
+    assert threshold == 138
+    assert classified.tolist() == [False, False, True, True, True]
+
+
+
+def test_sunday_noon_to_friday_7pm_schedule_boundaries():
+    shifts = [
+        {"days": [6], "start": time(12), "end": time(0), "active": True},
+        {"days": [0, 1, 2, 3], "start": time(0), "end": time(0), "active": True},
+        {"days": [4], "start": time(0), "end": time(19), "active": True},
+    ]
+    assert not is_operating(pd.Timestamp("2025-07-06 11:45"), shifts)  # Sunday before noon
+    assert is_operating(pd.Timestamp("2025-07-06 12:00"), shifts)  # Sunday noon
+    assert is_operating(pd.Timestamp("2025-07-07 03:00"), shifts)  # Monday overnight
+    assert is_operating(pd.Timestamp("2025-07-10 23:45"), shifts)  # Thursday late night
+    assert is_operating(pd.Timestamp("2025-07-11 18:45"), shifts)  # Friday before 7 PM
+    assert not is_operating(pd.Timestamp("2025-07-11 19:00"), shifts)  # Friday after shutdown
+    assert not is_operating(pd.Timestamp("2025-07-12 12:00"), shifts)  # Saturday

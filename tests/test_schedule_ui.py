@@ -35,3 +35,11 @@ def test_midnight_time_text_is_accepted():
     assert _coerce_time("12:00 AM") == time(0)
     assert _coerce_time("midnight") == time(0)
     assert _coerce_time("24:00") == time(0)
+
+
+
+def test_continuous_sunday_to_friday_preset_rows():
+    frame = _schedule_frame("Continuous operation: Sunday 12 PM to Friday 7 PM", [])
+    assert list(frame["Days"]) == ["Sun", "Mon-Thu", "Fri"]
+    assert list(frame["Start time"]) == ["12:00 PM", "12:00 AM", "12:00 AM"]
+    assert list(frame["End time"]) == ["12:00 AM", "12:00 AM", "07:00 PM"]

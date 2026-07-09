@@ -55,3 +55,35 @@ def test_summary_includes_official_dashboard_crossed_energy_buckets():
     assert row["On-Peak Non-Operating kWh"] == 8
     assert row["Off-Peak Non-Operating kWh"] == 12
     assert row["Coverage Status"] == "Partial"
+
+
+
+def test_idle_load_operating_mode_uses_demand_threshold():
+    frame = pd.DataFrame(
+        {
+            "Demand kW": [10, 20, 200, 300],
+            "__timestamp__": pd.to_datetime(
+                ["2025-07-01 00:00", "2025-07-01 01:00", "2025-07-01 02:00", "2025-07-01 03:00"]
+            ),
+        }
+    )
+    item = ExtractedFile(
+        account="A",
+        filename="idle.xlsx",
+        dataframe=frame,
+        month=7,
+        year=2025,
+        row_count=4,
+        demand_columns=["Demand kW"],
+        detected_interval_hours=1.0,
+    )
+    shifts = [{"days": [], "start": time(7), "end": time(18), "active": True}]
+    _, summary = process_files(
+        [item],
+        shifts,
+        classification_options={"operating_mode": "idle_load", "idle_quantile": 0.50},
+    )
+
+    row = summary.iloc[0]
+    assert row["Operating kWh"] == 500
+    assert row["Non-Operating kWh"] == 30

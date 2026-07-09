@@ -38,9 +38,10 @@ Choose one of these presets:
 - Two shifts
 - Three shifts
 - 24/7 operation
+- Continuous operation: Sunday 12:00 PM to Friday 7:00 PM
 - Custom schedule with up to three shifts
 
-The Configured Shifts table is editable. Each row has its own Days value, so weekday and weekend shifts can use different operating days. Examples include Mon-Fri, Sat-Sun, weekdays, weekends, and 24/7. Changing a preset shift time or days automatically switches the preset to Custom schedule while preserving the edited values. Custom schedules can contain up to three shifts. Overnight shifts such as 11:00 PM-6:30 AM are supported. A shift ending at 12:00 AM runs until midnight at the end of the selected day; after-midnight readings for overnight shifts belong to the day on which the overnight shift started.
+The Configured Shifts table is editable. Each row has its own Days value, so weekday and weekend shifts can use different operating days. Examples include Mon-Fri, Sat-Sun, weekdays, weekends, and 24/7. Changing a preset shift time or days automatically switches the preset to Custom schedule while preserving the edited values. Custom schedules can contain up to three shifts. Overnight shifts such as 11:00 PM-6:30 AM are supported. A shift ending at 12:00 AM runs until midnight at the end of the selected day; after-midnight readings for overnight shifts belong to the day on which the overnight shift started. The continuous Sunday-to-Friday preset is represented as three explicit rows: Sunday noon-midnight, Monday-Thursday 24-hour operation, and Friday midnight-7:00 PM.
 
 ### 3. Confirm detected data
 
@@ -70,15 +71,17 @@ The app detects the interval from the median positive spacing between timestamps
 
 ## Classification and summaries
 
-An interval is Operating when it falls on a selected operating day and within any active shift. All other readings are Non-Operating. Shift end times are exclusive, preventing adjacent shifts from double-counting their boundary.
+An interval is Operating when it falls on a selected operating day and within any active shift. All other readings are Non-Operating. Shift end times are exclusive, preventing adjacent shifts from double-counting their boundary. The app also offers continuous-facility idle-load and hybrid classification modes for facilities whose operating state is better represented by demand level than by a strict time clock.
 
-The app preserves the legacy on-peak rule:
+The app supports timestamp-alignment assumptions for classification. The default treats timestamps as the start of the interval. Advanced options can classify using the interval midpoint or can treat timestamps as interval-ending labels.
+
+The default on-peak rule uses exact legacy-style time windows:
 
 - Saturday and Sunday: off-peak
-- April–October weekdays: hours 12:00 PM through 9:59 PM
-- November–March weekdays: hours 6:00 AM through 10:59 AM and 6:00 PM through 10:59 PM
+- April-October weekdays: 12:00 PM up to, but not including, 9:00 PM
+- November-March weekdays: 6:00 AM up to, but not including, 10:00 AM, and 6:00 PM up to, but not including, 10:00 PM
 
-This rule came from the legacy prototype and is **not represented as a verified current FPL tariff**. Confirm it against the facility's applicable rate schedule before using it for tariff-sensitive decisions. The rule is isolated in `fpl_dashboard/classification.py` so future students can update it safely.
+A legacy whole-hour option is also available for comparison with older prototype behavior. These rules are **not represented as verified current FPL tariff rules**. Confirm them against the facility's applicable rate schedule before using the output for tariff-sensitive decisions. The rule is isolated in `fpl_dashboard/classification.py` so future students can update it safely.
 
 Monthly output includes total kWh, peak demand, operating/non-operating energy and demand, on/off-peak energy and demand, weekend energy, overnight energy, source labels, method, and confidence.
 
@@ -108,9 +111,11 @@ The download includes:
 4. Demand Summary
 5. Account-Level Summary when multiple accounts are present
 6. Consolidated Summary when multiple accounts are present
-7. Input File Log
-8. Estimation Notes
-9. Chart Data
+7. Classification Audit
+8. Daily Hourly Breakdown
+9. Input File Log
+10. Estimation Notes
+11. Chart Data
 
 Estimated rows are highlighted in the workbook. Energy and demand display values are rounded to whole kWh/kW, while percentages use one decimal place.
 
@@ -120,7 +125,7 @@ Estimated rows are highlighted in the workbook. Energy and demand display values
 python -m pytest
 ```
 
-The tests cover 15/30/60-minute interval detection, cross-calendar-month billing periods, detected and selected report windows, duplicate reporting months, partial-month warnings, ordinary/overnight/24-7 shifts, the documented legacy peak rule, cross-year interpolation, trend extrapolation, source labels, and Excel report sheet creation.
+The tests cover 15/30/60-minute interval detection, cross-calendar-month billing periods, detected and selected report windows, duplicate reporting months, partial-month warnings, ordinary/overnight/24-7 shifts, the Sunday noon-Friday 7 PM preset, timestamp alignment, idle-load classification, the documented peak rules, cross-year interpolation, trend extrapolation, source labels, and Excel report sheet creation.
 
 ## Deploy to Streamlit Community Cloud
 

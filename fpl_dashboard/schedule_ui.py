@@ -28,6 +28,7 @@ PRESET_OPTIONS = [
     "Two shifts",
     "Three shifts",
     "24/7 operation",
+    "Continuous operation: Sunday 12 PM to Friday 7 PM",
     "Custom schedule",
 ]
 
@@ -49,7 +50,9 @@ def _preset_shifts(preset: str) -> list[tuple[str, time, time]]:
 
 
 def _days_for_preset(preset: str) -> list[str]:
-    return DAY_NAMES if preset == "24/7 operation" else DAY_NAMES[:5]
+    if preset in {"24/7 operation", "Continuous operation: Sunday 12 PM to Friday 7 PM"}:
+        return DAY_NAMES
+    return DAY_NAMES[:5]
 
 
 def _format_days(days: list[str] | list[int]) -> str:
@@ -65,6 +68,32 @@ def _format_days(days: list[str] | list[int]) -> str:
 
 
 def _schedule_frame(preset: str, days: list[str]) -> pd.DataFrame:
+    if preset == "Continuous operation: Sunday 12 PM to Friday 7 PM":
+        rows = [
+            {
+                "Shift name": "Sunday startup",
+                "Days": "Sun",
+                "Start time": time(12).strftime("%I:%M %p"),
+                "End time": time(0).strftime("%I:%M %p"),
+                "Active": True,
+            },
+            {
+                "Shift name": "Weekday continuous",
+                "Days": "Mon-Thu",
+                "Start time": time(0).strftime("%I:%M %p"),
+                "End time": time(0).strftime("%I:%M %p"),
+                "Active": True,
+            },
+            {
+                "Shift name": "Friday shutdown",
+                "Days": "Fri",
+                "Start time": time(0).strftime("%I:%M %p"),
+                "End time": time(19).strftime("%I:%M %p"),
+                "Active": True,
+            },
+        ]
+        return pd.DataFrame(rows)
+
     day_label = _format_days(days)
     return pd.DataFrame(
         [

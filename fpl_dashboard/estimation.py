@@ -472,6 +472,9 @@ def estimate_missing_months(
                 row["Peak During Non-Operating"] = False
                 row["Coverage %"] = np.nan
                 row["Coverage Status"] = "Estimated Missing"
+                row["Total Rows"] = 0
+                row["Operating Rows"] = 0
+                row["Not Operating Rows"] = 0
                 row["Uploaded Row Count"] = 0
                 if "Expected Row Count" not in row or pd.isna(row.get("Expected Row Count")):
                     row["Expected Row Count"] = np.nan
