@@ -105,6 +105,15 @@ def classification_preview(summary: pd.DataFrame) -> pd.DataFrame:
     return grouped
 
 
+def has_active_operating_schedule(shifts: list[dict[str, object]]) -> bool:
+    return any(
+        shift.get("active", True)
+        and shift.get("valid", True)
+        and (shift.get("type") == "continuous_window" or bool(shift.get("days")))
+        for shift in shifts
+    )
+
+
 def schedule_diagnostics(shifts: list[dict[str, object]], schedule_rows: pd.DataFrame) -> pd.DataFrame:
     records = []
     day_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -224,10 +233,8 @@ classification_options = {
     "timestamp_alignment": timestamp_alignment,
     "on_peak_rule": "exact" if on_peak_rule_label == "Exact FPL-style time windows" else "legacy_whole_hour",
 }
-if classification_mode == "fixed_schedule" and (
-    not any(shift["active"] for shift in shifts) or not any(shift["days"] for shift in shifts if shift["active"])
-):
-    st.warning("At least one active shift and one operating day are required for fixed-schedule classification.")
+if classification_mode == "fixed_schedule" and not has_active_operating_schedule(shifts):
+    st.warning("At least one active standard shift or continuous operating window is required for fixed-schedule classification.")
 
 st.header("Step 3: Confirm Detected Data")
 all_uploads = [(account, upload) for account, uploads in uploaded_by_account for upload in uploads]
@@ -333,12 +340,7 @@ else:
         )
         st.dataframe(report_coverage_preview(extracted_files, report_windows, interval_overrides), use_container_width=True, hide_index=True)
 
-    active_schedule = classification_mode == "idle_load" or any(
-        shift.get("active", True)
-        and shift.get("valid", True)
-        and (shift.get("type") == "continuous_window" or bool(shift.get("days")))
-        for shift in shifts
-    )
+    active_schedule = classification_mode == "idle_load" or has_active_operating_schedule(shifts)
     can_preview = not validation_errors and active_schedule and bool(extracted_files)
     if st.button("Preview classification percentages", disabled=not can_preview):
         try:
