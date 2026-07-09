@@ -41,5 +41,11 @@ def test_midnight_time_text_is_accepted():
 def test_continuous_operating_window_summary_is_generic():
     frame = _continuous_window_frame("Sunday", time(12), "Friday", time(19))
     assert frame.loc[0, "Schedule type"] == "Continuous operating window"
-    assert frame.loc[0, "Summary"] == "Operating continuously from Sunday 12:00 PM through Friday 07:00 PM."
-    assert _continuous_summary("Friday", time(22), "Monday", time(6)) == "Operating continuously from Friday 10:00 PM through Monday 06:00 AM."
+    assert frame.loc[0, "Summary"] == (
+        "The facility will be classified as operating continuously from Sunday 12:00 PM through Friday 07:00 PM. "
+        "All other times will be classified as not operating."
+    )
+    assert _continuous_summary("Friday", time(22), "Monday", time(6)) == (
+        "The facility will be classified as operating continuously from Friday 10:00 PM through Monday 06:00 AM. "
+        "All other times will be classified as not operating."
+    )

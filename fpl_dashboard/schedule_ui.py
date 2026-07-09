@@ -24,7 +24,7 @@ DAY_ALIASES = {
     **{label.lower(): index for index, label in enumerate(DAY_LABELS)},
 }
 PRESET_OPTIONS = [
-    "Standard weekly shifts",
+    "Fixed weekly shifts",
     "Continuous operating window",
     "24/7 operation",
     "Custom day-by-day schedule",
@@ -32,7 +32,7 @@ PRESET_OPTIONS = [
 
 
 def _preset_shifts(preset: str) -> list[tuple[str, time, time]]:
-    if preset in {"Standard business hours", "Standard weekly shifts"}:
+    if preset in {"Standard business hours", "Fixed weekly shifts"}:
         return [("Shift 1", time(8), time(17))]
     if preset == "Two shifts":
         return [("Shift 1", time(6, 30), time(15)), ("Shift 2", time(15), time(23))]
@@ -82,7 +82,11 @@ def _schedule_frame(preset: str, days: list[str]) -> pd.DataFrame:
 
 
 def _continuous_summary(start_day: str, start: time, end_day: str, end: time) -> str:
-    return f"Operating continuously from {start_day} {start.strftime('%I:%M %p')} through {end_day} {end.strftime('%I:%M %p')}."
+    return (
+        f"The facility will be classified as operating continuously from "
+        f"{start_day} {start.strftime('%I:%M %p')} through {end_day} {end.strftime('%I:%M %p')}. "
+        "All other times will be classified as not operating."
+    )
 
 
 def _continuous_window_frame(start_day: str, start: time, end_day: str, end: time) -> pd.DataFrame:
@@ -163,18 +167,18 @@ def _parse_days(value: object) -> list[int]:
 
 
 def _normalize_mode(value: str) -> str:
-    if value in {"Standard business hours", "Standard weekly shifts", "Two shifts", "Three shifts"}:
-        return "Standard weekly shifts"
+    if value in {"Standard business hours", "Standard weekly shifts", "Fixed weekly shifts", "Two shifts", "Three shifts"}:
+        return "Fixed weekly shifts"
     if value == "Custom schedule":
         return "Custom day-by-day schedule"
     if value in {"Continuous: Sunday 12 PM to Friday 7 PM", "Continuous operation: Sunday 12 PM to Friday 7 PM"}:
         return "Continuous operating window"
-    return value if value in PRESET_OPTIONS else "Standard weekly shifts"
+    return value if value in PRESET_OPTIONS else "Fixed weekly shifts"
 
 
 def _initialize_schedule_state() -> None:
     if "schedule_preset" not in st.session_state:
-        st.session_state.schedule_preset = "Standard weekly shifts"
+        st.session_state.schedule_preset = "Fixed weekly shifts"
     st.session_state.schedule_preset = _normalize_mode(st.session_state.schedule_preset)
     if "operating_days" not in st.session_state:
         st.session_state.operating_days = _days_for_preset(st.session_state.schedule_preset)
@@ -272,8 +276,8 @@ def _shift_rows_to_dicts(edited_rows: pd.DataFrame, too_many: bool) -> list[dict
 def _configure_continuous_window() -> tuple[list[dict[str, object]], pd.DataFrame]:
     st.subheader("Continuous Operating Window")
     st.caption(
-        "Select one weekly start point and one weekly end point. The start boundary is inclusive; "
-        "the end boundary is exclusive. Windows may wrap across the end of the week."
+        "Select one weekly start point and one weekly end point. The app will classify everything "
+        "inside that weekly window as operating and everything outside it as not operating."
     )
     col1, col2, col3, col4 = st.columns(4)
     with col1:
@@ -307,13 +311,13 @@ def configure_schedule() -> tuple[list[dict[str, object]], pd.DataFrame]:
     _initialize_schedule_state()
 
     preset = st.selectbox(
-        "Schedule mode",
+        "How should the facility's operating hours be defined?",
         PRESET_OPTIONS,
         key="schedule_preset",
         on_change=_load_selected_preset,
         help=(
-            "Use Standard weekly shifts for recurring day/time rows, Continuous operating window "
-            "for one uninterrupted weekly span, 24/7 for always-on facilities, or Custom day-by-day schedule."
+            "Choose fixed weekly shifts for recurring day/time rows, a continuous operating window "
+            "for one uninterrupted weekly span, 24/7 for always-on facilities, or a custom day-by-day schedule."
         ),
     )
     preset = _normalize_mode(preset)

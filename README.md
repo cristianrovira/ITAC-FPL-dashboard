@@ -41,7 +41,7 @@ Choose one of these schedule modes:
 - Continuous operating window
 - Custom schedule with up to three shifts
 
-Standard weekly shifts and custom day-by-day schedules use the editable Configured Shifts table. Each row has its own Days value, so weekday and weekend shifts can use different operating days. Examples include Mon-Fri, Sat-Sun, weekdays, weekends, and 24/7. Changing a preset shift time or days automatically switches the preset to Custom schedule while preserving the edited values. Custom schedules can contain up to three shifts. Overnight shifts such as 11:00 PM-6:30 AM are supported. A shift ending at 12:00 AM runs until midnight at the end of the selected day; after-midnight readings for overnight shifts belong to the day on which the overnight shift started. Continuous operating window lets the user choose one weekly start day/time and one weekly end day/time, such as Sunday 12:00 PM through Friday 7:00 PM or Friday 10:00 PM through Monday 6:00 AM. The start boundary is inclusive and the end boundary is exclusive. Internally, the app converts timestamps and the configured endpoints to minutes from the start of the week so windows that wrap across the end of the week are handled cleanly.
+Fixed weekly shifts and custom day-by-day schedules use the editable Configured Shifts table. Each row has its own Days value, so weekday and weekend shifts can use different operating days. Examples include Mon-Fri, Sat-Sun, weekdays, weekends, and 24/7. Changing a preset shift time or days automatically switches the mode to Custom day-by-day schedule while preserving the edited values. Custom day-by-day schedules can contain up to three shifts. Overnight shifts such as 11:00 PM-6:30 AM are supported. A shift ending at 12:00 AM runs until midnight at the end of the selected day; after-midnight readings for overnight shifts belong to the day on which the overnight shift started. Continuous operating window lets the user choose one weekly start day/time and one weekly end day/time, such as Sunday 12:00 PM through Friday 7:00 PM or Friday 10:00 PM through Monday 6:00 AM. The start boundary is inclusive and the end boundary is exclusive. Internally, the app converts timestamps and the configured endpoints to minutes from the start of the week so windows that wrap across the end of the week are handled cleanly.
 
 ### 3. Confirm detected data
 
@@ -71,7 +71,7 @@ The app detects the interval from the median positive spacing between timestamps
 
 ### Schedule mode guidance
 
-- **Standard weekly shifts**: recurring weekly rows such as Mon-Fri 8:00 AM-5:00 PM or multiple weekday shifts.
+- **Fixed weekly shifts**: recurring weekly rows such as Mon-Fri 8:00 AM-5:00 PM or multiple weekday shifts.
 - **Continuous operating window**: one uninterrupted weekly window selected by start day/time and end day/time. This is best for facilities that run continuously across several days but shut down for part of the week.
 - **24/7 operation**: every interval is operating.
 - **Custom day-by-day schedule**: editable schedule rows for site-specific operating patterns.
@@ -80,7 +80,7 @@ The app detects the interval from the median positive spacing between timestamps
 
 An interval is Operating when it falls on a selected operating day and within any active shift. All other readings are Non-Operating. Shift end times are exclusive, preventing adjacent shifts from double-counting their boundary. The app also offers continuous-facility idle-load and hybrid classification modes for facilities whose operating state is better represented by demand level than by a strict time clock.
 
-The app supports timestamp-alignment assumptions for classification. The default treats timestamps as the start of the interval. Advanced options can classify using the interval midpoint or can treat timestamps as interval-ending labels.
+The app supports timestamp-alignment assumptions for classification. The default treats timestamps as the start of the interval. Advanced settings can treat timestamps as either interval-start or interval-ending labels.
 
 The default on-peak rule uses exact legacy-style time windows:
 

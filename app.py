@@ -114,6 +114,16 @@ def has_active_operating_schedule(shifts: list[dict[str, object]]) -> bool:
     )
 
 
+def schedule_mode_label(shifts: list[dict[str, object]], schedule_rows: pd.DataFrame) -> str:
+    if any(shift.get("type") == "continuous_window" for shift in shifts):
+        return "Continuous operating window"
+    if len(shifts) == 1 and shifts[0].get("days") == list(range(7)) and shifts[0].get("start") == shifts[0].get("end"):
+        return "24/7 operation"
+    if "Schedule type" in schedule_rows.columns and not schedule_rows.empty:
+        return str(schedule_rows["Schedule type"].iloc[0])
+    return "Fixed weekly shifts"
+
+
 def schedule_diagnostics(shifts: list[dict[str, object]], schedule_rows: pd.DataFrame) -> pd.DataFrame:
     records = []
     day_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
@@ -138,7 +148,7 @@ def schedule_diagnostics(shifts: list[dict[str, object]], schedule_rows: pd.Data
         records.append(
             {
                 "Shift name": shift.get("name"),
-                "Schedule type": "Standard weekly shift",
+                "Schedule type": "Fixed weekly shift",
                 "Days": ", ".join(day_labels[day] for day in shift.get("days", [])),
                 "Start time": shift.get("start").strftime("%I:%M %p") if shift.get("start") else "Invalid",
                 "End time": shift.get("end").strftime("%I:%M %p") if shift.get("end") else "Invalid",
@@ -174,67 +184,49 @@ for account_index in range(account_count):
     )
     uploaded_by_account.append((account_name, list(uploads or [])))
 
-st.header("Step 2: Configure Operating Schedule")
+st.header("Step 2: Operating Schedule")
 shifts, schedule_rows = configure_schedule()
+current_schedule_mode = schedule_mode_label(shifts, schedule_rows)
 
-st.subheader("Operating classification")
-classification_label = st.selectbox(
-    "How should operating vs not-operating intervals be classified?",
-    [
-        "Fixed shift schedule",
-        "Continuous facility / idle-load detection",
-        "Hybrid: schedule plus idle-load detection",
-    ],
-    index=0,
-    help=(
-        "Use idle-load detection for facilities that run nearly continuously. "
-        "It marks the lowest-load intervals as not operating instead of treating all nights/weekends as off-hours."
-    ),
-)
-classification_mode = {
-    "Fixed shift schedule": "fixed_schedule",
-    "Continuous facility / idle-load detection": "idle_load",
-    "Hybrid: schedule plus idle-load detection": "hybrid",
-}[classification_label]
+st.subheader("Configured schedule preview")
+st.dataframe(schedule_diagnostics(shifts, schedule_rows), use_container_width=True, hide_index=True)
+
+with st.expander("Advanced Settings", expanded=False):
+    timestamp_alignment_label = st.selectbox(
+        "Timestamp alignment for classification",
+        [
+            "Timestamps mark interval start",
+            "Timestamps mark interval end",
+        ],
+        index=0,
+        help=(
+            "This affects how intervals near schedule boundaries are classified. "
+            "Only change this if results appear shifted around start or end times."
+        ),
+    )
+    timestamp_alignment = {
+        "Timestamps mark interval start": "start",
+        "Timestamps mark interval end": "end",
+    }[timestamp_alignment_label]
+    st.caption("On/off-peak classification uses the FPL-style time window logic currently implemented in the app.")
+    on_peak_rule_label = st.selectbox(
+        "On/off-peak rule",
+        ["Exact FPL-style time windows", "Legacy whole-hour windows"],
+        index=0,
+        help="Leave this as the exact FPL-style option unless you are comparing against older prototype output.",
+    )
+
+classification_label = current_schedule_mode
+classification_mode = "fixed_schedule"
 idle_quantile = 0.15
-if classification_mode in {"idle_load", "hybrid"}:
-    idle_quantile = st.slider(
-        "Idle-load cutoff percentile",
-        min_value=5,
-        max_value=30,
-        value=15,
-        step=1,
-        help="Intervals at or below this demand percentile are treated as idle/not operating. 15% is a good starting point for continuous facilities.",
-    ) / 100
-
-timestamp_alignment_label = st.selectbox(
-    "Timestamp alignment for classification",
-    [
-        "Timestamps mark interval start",
-        "Use interval midpoint",
-        "Timestamps mark interval end",
-    ],
-    index=0,
-    help="If FPL timestamps label the end of each interval, choose interval end so boundary times classify correctly.",
-)
-timestamp_alignment = {
-    "Timestamps mark interval start": "start",
-    "Use interval midpoint": "midpoint",
-    "Timestamps mark interval end": "end",
-}[timestamp_alignment_label]
-on_peak_rule_label = st.selectbox(
-    "On/off-peak rule",
-    ["Exact FPL-style time windows", "Legacy whole-hour windows"],
-    index=0,
-)
 classification_options = {
     "operating_mode": classification_mode,
     "idle_quantile": idle_quantile,
     "timestamp_alignment": timestamp_alignment,
     "on_peak_rule": "exact" if on_peak_rule_label == "Exact FPL-style time windows" else "legacy_whole_hour",
 }
-if classification_mode == "fixed_schedule" and not has_active_operating_schedule(shifts):
-    st.warning("At least one active standard shift or continuous operating window is required for fixed-schedule classification.")
+if not has_active_operating_schedule(shifts):
+    st.warning("At least one active operating schedule is required before processing.")
 
 st.header("Step 3: Confirm Detected Data")
 all_uploads = [(account, upload) for account, uploads in uploaded_by_account for upload in uploads]
@@ -340,7 +332,7 @@ else:
         )
         st.dataframe(report_coverage_preview(extracted_files, report_windows, interval_overrides), use_container_width=True, hide_index=True)
 
-    active_schedule = classification_mode == "idle_load" or has_active_operating_schedule(shifts)
+    active_schedule = has_active_operating_schedule(shifts)
     can_preview = not validation_errors and active_schedule and bool(extracted_files)
     if st.button("Preview classification percentages", disabled=not can_preview):
         try:
@@ -366,11 +358,9 @@ else:
     st.write("Detected uploaded months: " + (_month_list(detected_months) if detected_months else "None"))
     st.write("Selected interval assumption: " + (", ".join(sorted({interval_label(value) for value in detected_values if value is not None})) or "Not detected"))
     st.write(f"Timestamp alignment: {timestamp_alignment_label}")
-    st.write(f"Operating classification: {classification_label}")
-    if classification_mode in {"idle_load", "hybrid"}:
-        st.write(f"Idle-load cutoff percentile: {idle_quantile:.0%}")
+    st.write(f"Schedule mode: {classification_label}")
     st.write(f"On/off-peak rule: {on_peak_rule_label}")
-    st.write("Configured active shifts:")
+    st.write("Configured schedule:")
     st.dataframe(schedule_diagnostics(shifts, schedule_rows), use_container_width=True, hide_index=True)
     confirm_readiness = st.checkbox("I reviewed the report period, interval, timestamp, and classification assumptions.")
     include_reference_comparison = st.checkbox(
