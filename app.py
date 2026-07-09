@@ -11,7 +11,6 @@ from fpl_dashboard.charts import dashboard_charts
 from fpl_dashboard.estimation import estimate_missing_months
 from fpl_dashboard.extraction import extract_excel_file
 from fpl_dashboard.processing import find_potential_issues, process_files
-from fpl_dashboard.reference import reference_comparison
 from fpl_dashboard.report_period import (
     account_report_windows,
     coverage_by_account_period,
@@ -363,15 +362,6 @@ else:
     st.write("Configured schedule:")
     st.dataframe(schedule_diagnostics(shifts, schedule_rows), use_container_width=True, hide_index=True)
     confirm_readiness = st.checkbox("I reviewed the report period, interval, timestamp, and classification assumptions.")
-    include_reference_comparison = st.checkbox(
-        "Include known reference comparison diagnostic",
-        value=False,
-        help=(
-            "Validation-only comparison against the approved September 2024-August 2025 screenshot. "
-            "This does not change calculations and should normally be left off for other projects."
-        ),
-    )
-
     missing = {account: periods for account, periods in missing_months_for_windows(extracted_files, report_windows).items() if periods}
     if missing:
         for account, periods in missing.items():
@@ -397,14 +387,12 @@ else:
                 classification_options,
             )
             complete_summary, estimation_notes = estimate_missing_months(actual_summary, report_windows)
-            comparison = reference_comparison(complete_summary) if include_reference_comparison else pd.DataFrame()
-            report = create_excel_report(complete_summary, file_log, estimation_notes, interval_data, comparison)
+            report = create_excel_report(complete_summary, file_log, estimation_notes, interval_data)
             st.session_state["analysis_result"] = {
                 "summary": complete_summary,
                 "interval_data": interval_data,
                 "estimation_notes": estimation_notes,
                 "file_log": file_log,
-                "reference_comparison": comparison,
                 "report": report,
                 "warnings": validation_warnings,
             }
@@ -423,16 +411,6 @@ if "analysis_result" in st.session_state:
     st.subheader("Classification Audit")
     st.caption("Use this to verify actual and estimated month classification before relying on category totals.")
     st.dataframe(classification_audit_summary(summary_display), use_container_width=True, hide_index=True)
-
-    comparison = result.get("reference_comparison", pd.DataFrame())
-    if isinstance(comparison, pd.DataFrame) and not comparison.empty:
-        st.subheader("Reference Comparison Diagnostic")
-        st.caption("Validation-only comparison against the known approved screenshot; this table does not change calculations.")
-        display_comparison = comparison.copy()
-        for column in ["Reference Value", "App Value", "Difference", "Percent Difference"]:
-            if column in display_comparison:
-                display_comparison[column] = pd.to_numeric(display_comparison[column], errors="coerce").round(1)
-        st.dataframe(display_comparison, use_container_width=True, hide_index=True)
 
     for title, chart, explanation in dashboard_charts(summary):
         st.subheader(title)

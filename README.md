@@ -126,7 +126,6 @@ The download includes:
 
 Estimated rows are highlighted in the workbook. Energy and demand display values are rounded to whole kWh/kW, while percentages use one decimal place.
 
-For validation of the known approved screenshot only, the Streamlit app can optionally include a project-specific `Reference Comparison` diagnostic sheet. This comparison is isolated in `fpl_dashboard/reference.py` and does not change calculations or tune report output.
 
 ## Run tests
 
