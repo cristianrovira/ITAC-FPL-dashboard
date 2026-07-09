@@ -3,7 +3,7 @@ from datetime import time
 import pandas as pd
 
 from fpl_dashboard.extraction import ExtractedFile
-from fpl_dashboard.processing import process_files
+from fpl_dashboard.processing import daily_hourly_classification_breakdown, process_files
 
 
 def test_cross_calendar_month_rows_stay_in_assigned_reporting_month():
@@ -87,3 +87,39 @@ def test_idle_load_operating_mode_uses_demand_threshold():
     row = summary.iloc[0]
     assert row["Operating kWh"] == 500
     assert row["Non-Operating kWh"] == 30
+
+
+
+def test_daily_hourly_breakdown_includes_month_dimension():
+    frame = pd.DataFrame(
+        {
+            "Demand kW": [10, 20],
+            "__timestamp__": pd.to_datetime(["2025-07-01 13:00", "2025-08-01 13:00"]),
+        }
+    )
+    item_july = ExtractedFile(
+        account="A",
+        filename="july.xlsx",
+        dataframe=frame.iloc[[0]].copy(),
+        month=7,
+        year=2025,
+        row_count=1,
+        demand_columns=["Demand kW"],
+        detected_interval_hours=1.0,
+    )
+    item_august = ExtractedFile(
+        account="A",
+        filename="august.xlsx",
+        dataframe=frame.iloc[[1]].copy(),
+        month=8,
+        year=2025,
+        row_count=1,
+        demand_columns=["Demand kW"],
+        detected_interval_hours=1.0,
+    )
+    shifts = [{"days": list(range(7)), "start": time(0), "end": time(0), "active": True}]
+    intervals, _ = process_files([item_july, item_august], shifts)
+    breakdown = daily_hourly_classification_breakdown(intervals)
+
+    assert {"July 2025", "August 2025"}.issubset(set(breakdown["Month / Year"]))
+    assert {"Year", "Month", "Hour"}.issubset(set(breakdown.columns))

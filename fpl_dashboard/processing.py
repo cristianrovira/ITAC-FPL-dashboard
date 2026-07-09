@@ -223,6 +223,9 @@ def daily_hourly_classification_breakdown(interval_data: pd.DataFrame) -> pd.Dat
     if interval_data.empty:
         return pd.DataFrame()
     frame = interval_data.copy()
+    frame["Month / Year"] = pd.to_datetime(
+        dict(year=frame["Year"].astype(int), month=frame["Month"].astype(int), day=1)
+    ).dt.strftime("%B %Y")
     frame["Day of Week"] = frame["Classification Timestamp"].dt.day_name()
     frame["Weekday Number"] = frame["Classification Timestamp"].dt.weekday
     frame["Hour"] = frame["Classification Timestamp"].dt.hour
@@ -232,7 +235,7 @@ def daily_hourly_classification_breakdown(interval_data: pd.DataFrame) -> pd.Dat
     frame["Off-Peak Operating kWh"] = frame["Interval kWh"].where(frame["Operating"] & ~frame["On-Peak"], 0.0)
     frame["On-Peak Not Operating kWh"] = frame["Interval kWh"].where(~frame["Operating"] & frame["On-Peak"], 0.0)
     frame["Off-Peak Not Operating kWh"] = frame["Interval kWh"].where(~frame["Operating"] & ~frame["On-Peak"], 0.0)
-    grouped = frame.groupby(["Account", "Weekday Number", "Day of Week", "Hour"], sort=True).agg(
+    grouped = frame.groupby(["Account", "Year", "Month", "Month / Year", "Weekday Number", "Day of Week", "Hour"], sort=True).agg(
         **{
             "Total Rows": ("Interval kWh", "count"),
             "Operating Rows": ("Operating", "sum"),
@@ -248,6 +251,9 @@ def daily_hourly_classification_breakdown(interval_data: pd.DataFrame) -> pd.Dat
     grouped["Not Operating Rows"] = grouped["Total Rows"] - grouped["Operating Rows"]
     ordered = [
         "Account",
+        "Year",
+        "Month",
+        "Month / Year",
         "Weekday Number",
         "Day of Week",
         "Hour",

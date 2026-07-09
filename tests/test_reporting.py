@@ -62,3 +62,13 @@ def test_excel_report_contains_required_sheets_with_estimates():
     assert "Coverage Status" in quality.columns
     audit = pd.read_excel(BytesIO(content), sheet_name="Classification Audit")
     assert "Operating Rows" in audit.columns
+
+
+
+def test_excel_report_can_include_reference_comparison_sheet():
+    file_log = pd.DataFrame({"Account": ["A"], "File name": ["jan.xlsx"], "Status": ["Valid"]})
+    notes = pd.DataFrame({"Account number": ["A"], "Estimated month": ["February"]})
+    reference = pd.DataFrame({"Month": ["September 2024"], "Metric": ["Total kWh"], "Difference": [0]})
+    content = create_excel_report(_monthly_summary(), file_log, notes, reference_comparison=reference)
+    workbook = pd.ExcelFile(BytesIO(content))
+    assert "Reference Comparison" in workbook.sheet_names

@@ -38,12 +38,50 @@ def _active_shift(shift: Shift) -> bool:
     return bool(shift.get("active", True))
 
 
+def weekly_position_minutes(day: int, value: time) -> int:
+    """Return minutes from Monday 00:00 for a weekly day/time position."""
+    return int(day) * 24 * 60 + value.hour * 60 + value.minute
+
+
+def timestamp_weekly_position_minutes(timestamp: pd.Timestamp) -> int:
+    timestamp = pd.Timestamp(timestamp)
+    return weekly_position_minutes(timestamp.weekday(), timestamp.time())
+
+
+def timestamp_in_continuous_window(timestamp: pd.Timestamp, shift: Shift) -> bool:
+    """Classify a timestamp inside a generic continuous weekly operating window.
+
+    Start is inclusive and end is exclusive. If the end position is before the
+    start position, the window wraps across the end of the week.
+    """
+    if pd.isna(timestamp) or not _active_shift(shift):
+        return False
+    start = shift.get("start")
+    end = shift.get("end")
+    start_day = shift.get("start_day")
+    end_day = shift.get("end_day")
+    if not isinstance(start, time) or not isinstance(end, time) or start_day is None or end_day is None:
+        return False
+
+    current = timestamp_weekly_position_minutes(pd.Timestamp(timestamp))
+    start_position = weekly_position_minutes(int(start_day), start)
+    end_position = weekly_position_minutes(int(end_day), end)
+    if start_position == end_position:
+        return True
+    if start_position < end_position:
+        return start_position <= current < end_position
+    return current >= start_position or current < end_position
+
+
 def timestamp_in_shift(timestamp: pd.Timestamp, shift: Shift) -> bool:
     """Return whether a timestamp falls in a shift, including after-midnight hours.
 
     Overnight hours after midnight belong to the day on which the shift started.
     End times are exclusive to avoid double-counting adjacent shifts.
+    Continuous weekly windows are evaluated with weekly minute offsets.
     """
+    if shift.get("type") == "continuous_window":
+        return timestamp_in_continuous_window(timestamp, shift)
     if pd.isna(timestamp) or not _active_shift(shift):
         return False
 
@@ -74,6 +112,13 @@ def is_around_the_clock_schedule(shifts: Iterable[Shift]) -> bool:
             continue
         start = shift.get("start")
         end = shift.get("end")
+        if shift.get("type") == "continuous_window":
+            start_day = shift.get("start_day")
+            end_day = shift.get("end_day")
+            if start_day is not None and end_day is not None and isinstance(start, time) and isinstance(end, time):
+                if weekly_position_minutes(int(start_day), start) == weekly_position_minutes(int(end_day), end):
+                    return True
+            continue
         days = {int(day) for day in shift.get("days", [])}
         if isinstance(start, time) and isinstance(end, time) and start == end:
             active_days.update(days)

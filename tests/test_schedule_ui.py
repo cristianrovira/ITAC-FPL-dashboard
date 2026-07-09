@@ -1,6 +1,6 @@
 from datetime import time
 
-from fpl_dashboard.schedule_ui import _coerce_time, _days_for_preset, _parse_days, _preset_shifts, _schedule_frame
+from fpl_dashboard.schedule_ui import _coerce_time, _continuous_summary, _continuous_window_frame, _days_for_preset, _parse_days, _preset_shifts, _schedule_frame
 
 
 def test_standard_business_hours_defaults():
@@ -38,8 +38,8 @@ def test_midnight_time_text_is_accepted():
 
 
 
-def test_continuous_sunday_to_friday_preset_rows():
-    frame = _schedule_frame("Continuous operation: Sunday 12 PM to Friday 7 PM", [])
-    assert list(frame["Days"]) == ["Sun", "Mon-Thu", "Fri"]
-    assert list(frame["Start time"]) == ["12:00 PM", "12:00 AM", "12:00 AM"]
-    assert list(frame["End time"]) == ["12:00 AM", "12:00 AM", "07:00 PM"]
+def test_continuous_operating_window_summary_is_generic():
+    frame = _continuous_window_frame("Sunday", time(12), "Friday", time(19))
+    assert frame.loc[0, "Schedule type"] == "Continuous operating window"
+    assert frame.loc[0, "Summary"] == "Operating continuously from Sunday 12:00 PM through Friday 07:00 PM."
+    assert _continuous_summary("Friday", time(22), "Monday", time(6)) == "Operating continuously from Friday 10:00 PM through Monday 06:00 AM."

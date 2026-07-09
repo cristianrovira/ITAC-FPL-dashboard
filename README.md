@@ -32,16 +32,16 @@ The reader prioritizes the legacy FPL layout with headers on Excel row 4, then c
 
 ### 2. Define operating shifts
 
-Choose one of these presets:
+Choose one of these schedule modes:
 
 - Standard business hours: Monday–Friday, 8:00 AM–5:00 PM
 - Two shifts
 - Three shifts
 - 24/7 operation
-- Continuous operation: Sunday 12:00 PM to Friday 7:00 PM
+- Continuous operating window
 - Custom schedule with up to three shifts
 
-The Configured Shifts table is editable. Each row has its own Days value, so weekday and weekend shifts can use different operating days. Examples include Mon-Fri, Sat-Sun, weekdays, weekends, and 24/7. Changing a preset shift time or days automatically switches the preset to Custom schedule while preserving the edited values. Custom schedules can contain up to three shifts. Overnight shifts such as 11:00 PM-6:30 AM are supported. A shift ending at 12:00 AM runs until midnight at the end of the selected day; after-midnight readings for overnight shifts belong to the day on which the overnight shift started. The continuous Sunday-to-Friday preset is represented as three explicit rows: Sunday noon-midnight, Monday-Thursday 24-hour operation, and Friday midnight-7:00 PM.
+Standard weekly shifts and custom day-by-day schedules use the editable Configured Shifts table. Each row has its own Days value, so weekday and weekend shifts can use different operating days. Examples include Mon-Fri, Sat-Sun, weekdays, weekends, and 24/7. Changing a preset shift time or days automatically switches the preset to Custom schedule while preserving the edited values. Custom schedules can contain up to three shifts. Overnight shifts such as 11:00 PM-6:30 AM are supported. A shift ending at 12:00 AM runs until midnight at the end of the selected day; after-midnight readings for overnight shifts belong to the day on which the overnight shift started. Continuous operating window lets the user choose one weekly start day/time and one weekly end day/time, such as Sunday 12:00 PM through Friday 7:00 PM or Friday 10:00 PM through Monday 6:00 AM. The start boundary is inclusive and the end boundary is exclusive. Internally, the app converts timestamps and the configured endpoints to minutes from the start of the week so windows that wrap across the end of the week are handled cleanly.
 
 ### 3. Confirm detected data
 
@@ -68,6 +68,13 @@ The interface uses intuitive labels:
 | 1 hour | 1.0 |
 
 The app detects the interval from the median positive spacing between timestamps and measures how consistently the file follows that spacing. Use **Manually override detected interval** when the source file is irregular or the detected value is not appropriate. A wrong interval changes calculated kWh but does not scale peak kW.
+
+### Schedule mode guidance
+
+- **Standard weekly shifts**: recurring weekly rows such as Mon-Fri 8:00 AM-5:00 PM or multiple weekday shifts.
+- **Continuous operating window**: one uninterrupted weekly window selected by start day/time and end day/time. This is best for facilities that run continuously across several days but shut down for part of the week.
+- **24/7 operation**: every interval is operating.
+- **Custom day-by-day schedule**: editable schedule rows for site-specific operating patterns.
 
 ## Classification and summaries
 
@@ -118,6 +125,8 @@ The download includes:
 11. Chart Data
 
 Estimated rows are highlighted in the workbook. Energy and demand display values are rounded to whole kWh/kW, while percentages use one decimal place.
+
+For validation of the known approved screenshot only, the Streamlit app can optionally include a project-specific `Reference Comparison` diagnostic sheet. This comparison is isolated in `fpl_dashboard/reference.py` and does not change calculations or tune report output.
 
 ## Run tests
 

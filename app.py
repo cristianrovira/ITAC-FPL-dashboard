@@ -11,6 +11,7 @@ from fpl_dashboard.charts import dashboard_charts
 from fpl_dashboard.estimation import estimate_missing_months
 from fpl_dashboard.extraction import extract_excel_file
 from fpl_dashboard.processing import find_potential_issues, process_files
+from fpl_dashboard.reference import reference_comparison
 from fpl_dashboard.report_period import (
     account_report_windows,
     coverage_by_account_period,
@@ -20,7 +21,7 @@ from fpl_dashboard.report_period import (
     suggested_report_end,
     suggested_report_end_options,
 )
-from fpl_dashboard.reporting import create_excel_report
+from fpl_dashboard.reporting import classification_audit_summary, create_excel_report
 from fpl_dashboard.schedule_ui import configure_schedule
 from fpl_dashboard.utils import INTERVAL_LABELS, interval_label
 from fpl_dashboard.validation import missing_months_for_windows, validate_files
@@ -106,11 +107,30 @@ def classification_preview(summary: pd.DataFrame) -> pd.DataFrame:
 
 def schedule_diagnostics(shifts: list[dict[str, object]], schedule_rows: pd.DataFrame) -> pd.DataFrame:
     records = []
+    day_labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    full_day_labels = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
     for shift in shifts:
+        if shift.get("type") == "continuous_window":
+            start_day = full_day_labels[int(shift.get("start_day", 0))]
+            end_day = full_day_labels[int(shift.get("end_day", 0))]
+            records.append(
+                {
+                    "Shift name": shift.get("name"),
+                    "Schedule type": "Continuous operating window",
+                    "Days": f"{start_day} through {end_day}",
+                    "Start time": shift.get("start").strftime("%I:%M %p") if shift.get("start") else "Invalid",
+                    "End time": shift.get("end").strftime("%I:%M %p") if shift.get("end") else "Invalid",
+                    "Active": bool(shift.get("active", True)),
+                    "Valid": bool(shift.get("valid", False)),
+                    "Summary": shift.get("summary", ""),
+                }
+            )
+            continue
         records.append(
             {
                 "Shift name": shift.get("name"),
-                "Days": ", ".join(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][day] for day in shift.get("days", [])),
+                "Schedule type": "Standard weekly shift",
+                "Days": ", ".join(day_labels[day] for day in shift.get("days", [])),
                 "Start time": shift.get("start").strftime("%I:%M %p") if shift.get("start") else "Invalid",
                 "End time": shift.get("end").strftime("%I:%M %p") if shift.get("end") else "Invalid",
                 "Active": bool(shift.get("active", True)),
@@ -314,7 +334,10 @@ else:
         st.dataframe(report_coverage_preview(extracted_files, report_windows, interval_overrides), use_container_width=True, hide_index=True)
 
     active_schedule = classification_mode == "idle_load" or any(
-        shift["active"] and shift["days"] and shift.get("valid", True) for shift in shifts
+        shift.get("active", True)
+        and shift.get("valid", True)
+        and (shift.get("type") == "continuous_window" or bool(shift.get("days")))
+        for shift in shifts
     )
     can_preview = not validation_errors and active_schedule and bool(extracted_files)
     if st.button("Preview classification percentages", disabled=not can_preview):
@@ -348,6 +371,14 @@ else:
     st.write("Configured active shifts:")
     st.dataframe(schedule_diagnostics(shifts, schedule_rows), use_container_width=True, hide_index=True)
     confirm_readiness = st.checkbox("I reviewed the report period, interval, timestamp, and classification assumptions.")
+    include_reference_comparison = st.checkbox(
+        "Include known reference comparison diagnostic",
+        value=False,
+        help=(
+            "Validation-only comparison against the approved September 2024-August 2025 screenshot. "
+            "This does not change calculations and should normally be left off for other projects."
+        ),
+    )
 
     missing = {account: periods for account, periods in missing_months_for_windows(extracted_files, report_windows).items() if periods}
     if missing:
@@ -374,12 +405,14 @@ else:
                 classification_options,
             )
             complete_summary, estimation_notes = estimate_missing_months(actual_summary, report_windows)
-            report = create_excel_report(complete_summary, file_log, estimation_notes, interval_data)
+            comparison = reference_comparison(complete_summary) if include_reference_comparison else pd.DataFrame()
+            report = create_excel_report(complete_summary, file_log, estimation_notes, interval_data, comparison)
             st.session_state["analysis_result"] = {
                 "summary": complete_summary,
                 "interval_data": interval_data,
                 "estimation_notes": estimation_notes,
                 "file_log": file_log,
+                "reference_comparison": comparison,
                 "report": report,
                 "warnings": validation_warnings,
             }
@@ -392,7 +425,22 @@ if "analysis_result" in st.session_state:
     st.header("Step 4: Generate Dashboard")
     st.subheader("Monthly Summary")
     st.caption("Estimated rows are monthly summary estimates only; no fake interval readings are created.")
-    st.dataframe(rounded_summary(summary), use_container_width=True, hide_index=True)
+    summary_display = rounded_summary(summary)
+    st.dataframe(summary_display, use_container_width=True, hide_index=True)
+
+    st.subheader("Classification Audit")
+    st.caption("Use this to verify actual and estimated month classification before relying on category totals.")
+    st.dataframe(classification_audit_summary(summary_display), use_container_width=True, hide_index=True)
+
+    comparison = result.get("reference_comparison", pd.DataFrame())
+    if isinstance(comparison, pd.DataFrame) and not comparison.empty:
+        st.subheader("Reference Comparison Diagnostic")
+        st.caption("Validation-only comparison against the known approved screenshot; this table does not change calculations.")
+        display_comparison = comparison.copy()
+        for column in ["Reference Value", "App Value", "Difference", "Percent Difference"]:
+            if column in display_comparison:
+                display_comparison[column] = pd.to_numeric(display_comparison[column], errors="coerce").round(1)
+        st.dataframe(display_comparison, use_container_width=True, hide_index=True)
 
     for title, chart, explanation in dashboard_charts(summary):
         st.subheader(title)

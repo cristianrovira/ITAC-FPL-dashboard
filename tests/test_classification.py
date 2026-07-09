@@ -8,6 +8,7 @@ from fpl_dashboard.classification import (
     classify_operating,
     idle_load_threshold,
     is_on_peak,
+    timestamp_in_continuous_window,
     is_operating,
 )
 
@@ -91,3 +92,51 @@ def test_sunday_noon_to_friday_7pm_schedule_boundaries():
     assert is_operating(pd.Timestamp("2025-07-11 18:45"), shifts)  # Friday before 7 PM
     assert not is_operating(pd.Timestamp("2025-07-11 19:00"), shifts)  # Friday after shutdown
     assert not is_operating(pd.Timestamp("2025-07-12 12:00"), shifts)  # Saturday
+
+
+
+def test_continuous_operating_window_sunday_noon_to_friday_7pm():
+    shift = {
+        "type": "continuous_window",
+        "start_day": 6,
+        "start": time(12),
+        "end_day": 4,
+        "end": time(19),
+        "active": True,
+    }
+    assert not timestamp_in_continuous_window(pd.Timestamp("2025-07-06 11:45"), shift)
+    assert timestamp_in_continuous_window(pd.Timestamp("2025-07-06 12:00"), shift)
+    assert timestamp_in_continuous_window(pd.Timestamp("2025-07-07 12:00"), shift)
+    assert timestamp_in_continuous_window(pd.Timestamp("2025-07-10 12:00"), shift)
+    assert timestamp_in_continuous_window(pd.Timestamp("2025-07-11 18:45"), shift)
+    assert not timestamp_in_continuous_window(pd.Timestamp("2025-07-11 19:00"), shift)
+    assert not timestamp_in_continuous_window(pd.Timestamp("2025-07-12 12:00"), shift)
+
+
+def test_continuous_operating_window_wraps_across_week_end():
+    shift = {
+        "type": "continuous_window",
+        "start_day": 4,
+        "start": time(22),
+        "end_day": 0,
+        "end": time(6),
+        "active": True,
+    }
+    assert not is_operating(pd.Timestamp("2025-07-11 21:59"), [shift])
+    assert is_operating(pd.Timestamp("2025-07-11 22:00"), [shift])
+    assert is_operating(pd.Timestamp("2025-07-12 12:00"), [shift])
+    assert is_operating(pd.Timestamp("2025-07-13 23:00"), [shift])
+    assert is_operating(pd.Timestamp("2025-07-14 05:59"), [shift])
+    assert not is_operating(pd.Timestamp("2025-07-14 06:00"), [shift])
+
+
+def test_inactive_continuous_window_is_ignored():
+    shift = {
+        "type": "continuous_window",
+        "start_day": 0,
+        "start": time(0),
+        "end_day": 0,
+        "end": time(0),
+        "active": False,
+    }
+    assert not is_operating(pd.Timestamp("2025-07-07 12:00"), [shift])

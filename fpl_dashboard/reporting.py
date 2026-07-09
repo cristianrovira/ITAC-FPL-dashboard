@@ -115,6 +115,7 @@ def create_excel_report(
     input_file_log: pd.DataFrame,
     estimation_notes: pd.DataFrame,
     interval_data: pd.DataFrame | None = None,
+    reference_comparison: pd.DataFrame | None = None,
 ) -> bytes:
     """Create the complete report workbook in memory."""
     account_count = monthly_summary["Account"].nunique() if not monthly_summary.empty else 0
@@ -147,6 +148,8 @@ def create_excel_report(
             ]
         )
     diagnostic_breakdown = daily_hourly_classification_breakdown(interval_data) if interval_data is not None else pd.DataFrame()
+    if reference_comparison is not None and not reference_comparison.empty:
+        sheets.append(("Reference Comparison", reference_comparison.copy()))
     sheets.extend(
         [
             ("Daily Hourly Breakdown", diagnostic_breakdown),
