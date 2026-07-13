@@ -19,7 +19,7 @@ from fpl_dashboard.report_period import (
     report_window,
     suggested_report_end,
 )
-from fpl_dashboard.reporting import classification_audit_summary, create_excel_report
+from fpl_dashboard.reporting import create_excel_report
 from fpl_dashboard.schedule_ui import configure_schedule
 from fpl_dashboard.utils import INTERVAL_LABELS, interval_label
 from fpl_dashboard.validation import missing_months_for_windows, validate_files
@@ -402,10 +402,6 @@ if "analysis_result" in st.session_state:
     st.caption("Estimated rows are monthly summary estimates only; no fake interval readings are created.")
     summary_display = rounded_summary(summary)
     st.dataframe(summary_display, use_container_width=True, hide_index=True)
-
-    st.subheader("Classification Audit")
-    st.caption("Use this to verify actual and estimated month classification before relying on category totals.")
-    st.dataframe(classification_audit_summary(summary_display), use_container_width=True, hide_index=True)
 
     for title, chart, explanation in dashboard_charts(summary):
         st.subheader(title)
