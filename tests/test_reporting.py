@@ -1,6 +1,7 @@
 from io import BytesIO
 
 import pandas as pd
+from openpyxl import load_workbook
 
 from fpl_dashboard.processing import DEMAND_COLUMNS, ENERGY_COLUMNS
 from fpl_dashboard.reporting import create_excel_report
@@ -55,6 +56,16 @@ def test_excel_report_contains_required_sheets_with_estimates():
     }
     assert required.issubset(set(workbook.sheet_names))
     assert workbook.sheet_names[:2] == ["Official Dashboard", "Monthly Summary"]
+
+    styled_workbook = load_workbook(BytesIO(content))
+    official_sheet = styled_workbook["Official Dashboard"]
+    assert official_sheet["A1"].fill.fgColor.rgb == "FF95B3D7"
+    assert official_sheet.max_row == len(_monthly_summary()) + 2
+    total_row = [cell.value for cell in official_sheet[official_sheet.max_row]]
+    assert "Total" in total_row
+    total_kwh_column = [cell.value for cell in official_sheet[1]].index("Total kWh") + 1
+    assert official_sheet.cell(official_sheet.max_row, total_kwh_column).fill.fgColor.rgb == "FFFFFF00"
+
     monthly = pd.read_excel(BytesIO(content), sheet_name="Monthly Summary")
     assert "Estimated" in set(monthly["Data Source"])
     official = pd.read_excel(BytesIO(content), sheet_name="Official Dashboard")

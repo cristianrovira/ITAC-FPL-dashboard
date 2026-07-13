@@ -110,6 +110,145 @@ def classification_audit_summary(monthly_display: pd.DataFrame) -> pd.DataFrame:
     return monthly_display[[column for column in columns if column in monthly_display]].copy()
 
 
+DASHBOARD_TOTAL_COLUMNS = {"Total kWh", "Total kWh Check"}
+
+
+def _with_total_row(frame: pd.DataFrame, label_column: str = "Month") -> pd.DataFrame:
+    """Append an Excel-display total row for dashboard-style sheets."""
+    if frame.empty:
+        return frame
+    result = frame.copy()
+    total_row: dict[str, object] = {}
+    for column in result.columns:
+        values = pd.to_numeric(result[column], errors="coerce")
+        if values.notna().any():
+            total_row[column] = float(values.sum())
+        else:
+            total_row[column] = ""
+    if label_column in result.columns:
+        total_row[label_column] = "Total"
+    elif len(result.columns):
+        total_row[result.columns[0]] = "Total"
+    return pd.concat([result, pd.DataFrame([total_row])], ignore_index=True)
+
+
+def _write_formatted_cell(worksheet, row: int, column: int, value: object, cell_format) -> None:
+    if pd.isna(value):
+        worksheet.write_blank(row, column, None, cell_format)
+    elif isinstance(value, bool):
+        worksheet.write_boolean(row, column, value, cell_format)
+    elif isinstance(value, (int, float)):
+        worksheet.write_number(row, column, float(value), cell_format)
+    else:
+        worksheet.write(row, column, value, cell_format)
+
+
+def _column_width(frame: pd.DataFrame, column: str) -> int:
+    values = frame[column].astype(str) if column in frame and not frame.empty else pd.Series(dtype=str)
+    max_value_width = int(values.str.len().max()) if not values.empty else 0
+    return min(max(len(str(column)) + 2, max_value_width + 2, 12), 45)
+
+
+def _excel_column_name(index: int) -> str:
+    name = ""
+    index += 1
+    while index:
+        index, remainder = divmod(index - 1, 26)
+        name = chr(65 + remainder) + name
+    return name
+
+
+def _format_official_dashboard_sheet(workbook, worksheet, frame: pd.DataFrame) -> None:
+    formats = {
+        "header": workbook.add_format({
+            "bold": True,
+            "bg_color": "#95B3D7",
+            "font_color": "#000000",
+            "border": 1,
+            "border_color": "#000000",
+            "align": "center",
+            "valign": "vcenter",
+            "text_wrap": True,
+        }),
+        "month": workbook.add_format({"bg_color": "#D8E4BC", "border": 1, "border_color": "#D9D9D9", "align": "center"}),
+        "text": workbook.add_format({"border": 1, "border_color": "#D9D9D9", "align": "left"}),
+        "number": workbook.add_format({"num_format": "#,##0", "border": 1, "border_color": "#D9D9D9", "align": "right"}),
+        "total_label": workbook.add_format({"bold": True, "bg_color": "#D8E4BC", "border": 1, "border_color": "#000000", "align": "center"}),
+        "total_number": workbook.add_format({"bold": True, "bg_color": "#D8E4BC", "num_format": "#,##0", "border": 1, "border_color": "#000000", "align": "right"}),
+        "total_kwh": workbook.add_format({"bold": True, "bg_color": "#FFFF00", "num_format": "#,##0", "border": 1, "border_color": "#000000", "align": "right"}),
+    }
+    worksheet.freeze_panes(1, 0)
+    worksheet.hide_gridlines(2)
+    worksheet.set_row(0, 36)
+    total_row_index = len(frame)
+    for column_index, column in enumerate(frame.columns):
+        worksheet.write(0, column_index, column, formats["header"])
+        worksheet.set_column(column_index, column_index, _column_width(frame, column))
+    for row_index, (_, row) in enumerate(frame.iterrows(), start=1):
+        is_total = row_index == total_row_index
+        for column_index, column in enumerate(frame.columns):
+            value = row[column]
+            is_numeric = pd.api.types.is_number(value) and not pd.isna(value)
+            if is_total:
+                if column in DASHBOARD_TOTAL_COLUMNS:
+                    cell_format = formats["total_kwh"]
+                elif is_numeric:
+                    cell_format = formats["total_number"]
+                else:
+                    cell_format = formats["total_label"]
+            elif column == "Month":
+                cell_format = formats["month"]
+            elif is_numeric:
+                cell_format = formats["number"]
+            else:
+                cell_format = formats["text"]
+            _write_formatted_cell(worksheet, row_index, column_index, value, cell_format)
+
+
+def _format_standard_sheet(workbook, worksheet, frame: pd.DataFrame, sheet_name: str) -> None:
+    header_format = workbook.add_format({
+        "bold": True,
+        "bg_color": "#95B3D7",
+        "font_color": "#000000",
+        "border": 1,
+        "border_color": "#000000",
+        "align": "center",
+        "valign": "vcenter",
+        "text_wrap": True,
+    })
+    text_format = workbook.add_format({"border": 1, "border_color": "#D9D9D9"})
+    number_format = workbook.add_format({"num_format": "#,##0", "border": 1, "border_color": "#D9D9D9"})
+    percent_format = workbook.add_format({"num_format": "0.0", "border": 1, "border_color": "#D9D9D9"})
+    estimated_format = workbook.add_format({"bg_color": "#FFF2CC"})
+    worksheet.freeze_panes(1, 0)
+    worksheet.set_row(0, 30)
+    worksheet.autofilter(0, 0, max(len(frame), 1), max(len(frame.columns) - 1, 0))
+    for column_index, column in enumerate(frame.columns):
+        worksheet.write(0, column_index, column, header_format)
+        values = pd.to_numeric(frame[column], errors="coerce") if column in frame else pd.Series(dtype=float)
+        if column.endswith("%"):
+            column_format = percent_format
+        elif values.notna().any():
+            column_format = number_format
+        else:
+            column_format = text_format
+        worksheet.set_column(column_index, column_index, _column_width(frame, column), column_format)
+    if "Data Source" in frame.columns and len(frame):
+        source_index = frame.columns.get_loc("Data Source")
+        source_column = _excel_column_name(source_index)
+        worksheet.conditional_format(
+            1,
+            0,
+            len(frame),
+            len(frame.columns) - 1,
+            {
+                "type": "formula",
+                "criteria": f'=${source_column}2="Estimated"',
+                "format": estimated_format,
+            },
+        )
+
+
 def create_excel_report(
     monthly_summary: pd.DataFrame,
     input_file_log: pd.DataFrame,
@@ -122,7 +261,7 @@ def create_excel_report(
     monthly_display = _display_frame(monthly_summary)
 
     sheets: list[tuple[str, pd.DataFrame]] = [
-        ("Official Dashboard", official_dashboard_summary(monthly_display)),
+        ("Official Dashboard", _with_total_row(official_dashboard_summary(monthly_display))),
         ("Monthly Summary", monthly_display),
         ("Data Quality", data_quality_summary(monthly_display, input_file_log)),
         ("Classification Audit", classification_audit_summary(monthly_display)),
@@ -159,31 +298,13 @@ def create_excel_report(
     output = BytesIO()
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         workbook = writer.book
-        header_format = workbook.add_format({"bold": True, "bg_color": "#F47321", "font_color": "#FFFFFF", "border": 1})
-        estimated_format = workbook.add_format({"bg_color": "#FFF2CC"})
         for sheet_name, frame in sheets:
             if frame.empty and len(frame.columns) == 0:
                 frame = pd.DataFrame({"Notes": ["No records for this report."]})
             frame.to_excel(writer, sheet_name=sheet_name, index=False)
             worksheet = writer.sheets[sheet_name]
-            worksheet.freeze_panes(1, 0)
-            worksheet.autofilter(0, 0, max(len(frame), 1), max(len(frame.columns) - 1, 0))
-            for column_index, column in enumerate(frame.columns):
-                worksheet.write(0, column_index, column, header_format)
-                values = frame[column].astype(str) if not frame.empty else pd.Series(dtype=str)
-                width = min(max(len(str(column)) + 2, int(values.str.len().max() if not values.empty else 0) + 2), 45)
-                worksheet.set_column(column_index, column_index, width)
-            if "Data Source" in frame.columns and len(frame):
-                source_index = frame.columns.get_loc("Data Source")
-                worksheet.conditional_format(
-                    1,
-                    0,
-                    len(frame),
-                    len(frame.columns) - 1,
-                    {
-                        "type": "formula",
-                        "criteria": f'=${chr(65 + source_index)}2="Estimated"' if source_index < 26 else '=""',
-                        "format": estimated_format,
-                    },
-                )
+            if sheet_name == "Official Dashboard":
+                _format_official_dashboard_sheet(workbook, worksheet, frame)
+            else:
+                _format_standard_sheet(workbook, worksheet, frame, sheet_name)
     return output.getvalue()
