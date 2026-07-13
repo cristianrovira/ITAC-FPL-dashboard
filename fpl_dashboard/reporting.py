@@ -122,8 +122,8 @@ def create_excel_report(
     monthly_display = _display_frame(monthly_summary)
 
     sheets: list[tuple[str, pd.DataFrame]] = [
-        ("Monthly Summary", monthly_display),
         ("Official Dashboard", official_dashboard_summary(monthly_display)),
+        ("Monthly Summary", monthly_display),
         ("Data Quality", data_quality_summary(monthly_display, input_file_log)),
         ("Classification Audit", classification_audit_summary(monthly_display)),
         (

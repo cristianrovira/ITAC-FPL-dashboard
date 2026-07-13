@@ -54,6 +54,7 @@ def test_excel_report_contains_required_sheets_with_estimates():
         "Chart Data",
     }
     assert required.issubset(set(workbook.sheet_names))
+    assert workbook.sheet_names[:2] == ["Official Dashboard", "Monthly Summary"]
     monthly = pd.read_excel(BytesIO(content), sheet_name="Monthly Summary")
     assert "Estimated" in set(monthly["Data Source"])
     official = pd.read_excel(BytesIO(content), sheet_name="Official Dashboard")
