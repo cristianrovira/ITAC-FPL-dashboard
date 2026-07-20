@@ -9,7 +9,7 @@ import streamlit as st
 
 from fpl_dashboard.charts import dashboard_charts
 from fpl_dashboard.estimation import estimate_missing_months
-from fpl_dashboard.extraction import extract_excel_file
+from fpl_dashboard.extraction import apply_column_overrides, extract_excel_file
 from fpl_dashboard.processing import find_potential_issues, process_files
 from fpl_dashboard.report_period import (
     account_report_windows,
@@ -157,6 +157,43 @@ def schedule_diagnostics(shifts: list[dict[str, object]], schedule_rows: pd.Data
     return pd.DataFrame(records) if records else schedule_rows.copy()
 
 
+def _unique_options(*groups) -> list[str]:
+    options: list[str] = []
+    for group in groups:
+        for value in group or []:
+            value = str(value)
+            if value and value not in options:
+                options.append(value)
+    return options
+
+
+def _file_column_options(item, value_only: bool = False) -> list[str]:
+    if item.dataframe is None:
+        return []
+    all_columns = [str(column) for column in item.dataframe.columns if str(column) != "__timestamp__"]
+    if value_only:
+        return _unique_options(item.demand_candidates, item.numeric_columns, all_columns)
+    return _unique_options(item.timestamp_candidates, all_columns)
+
+
+def _needs_column_review(item) -> bool:
+    return (
+        item.timestamp_column is None
+        or not item.demand_columns
+        or item.timestamp_detection_confidence in {"Low", "Not detected"}
+        or item.demand_detection_confidence in {"Low", "Not detected"}
+    )
+
+
+def _detection_label(item) -> str:
+    return (
+        f"Timestamp: {item.timestamp_column or 'not detected'} "
+        f"({item.timestamp_detection_confidence}); "
+        f"Interval value: {', '.join(item.demand_columns) if item.demand_columns else 'not detected'} "
+        f"({item.demand_detection_confidence})"
+    )
+
+
 if ASSET_PATH.exists():
     st.image(str(ASSET_PATH), width=280)
 st.title("ITAC FPL Dashboard Analysis Tool")
@@ -231,21 +268,67 @@ if not extracted_files:
     st.warning("Upload at least one Excel file to continue.")
 else:
     demand_selections: dict[tuple[str, str], list[str]] = {}
+    review_columns = st.checkbox(
+        "Review or override detected file columns",
+        value=any(_needs_column_review(item) for item in extracted_files),
+        help=(
+            "Use this only for unusual FPL exports. The app normally detects the timestamp and interval-value "
+            "columns automatically from both headers and data patterns."
+        ),
+    )
+    updated_files = list(extracted_files)
     for file_index, item in enumerate(extracted_files):
-        key = (item.account, item.filename)
-        if len(item.demand_columns) == 1:
-            demand_selections[key] = item.demand_columns
-        elif item.numeric_columns:
-            prompt = "Select demand column(s)" if not item.demand_columns else "Confirm demand column(s)"
-            demand_selections[key] = st.multiselect(
-                f"{prompt} — {item.account} / {item.filename}",
-                item.numeric_columns,
-                default=item.demand_columns[:1],
-                key=f"demand_selection_{file_index}",
-                help="Select multiple columns only when their kW values should be added into one account total.",
+        needs_review = _needs_column_review(item)
+        if needs_review:
+            st.warning(
+                f"We could not confidently identify all columns for {item.account} / {item.filename}. "
+                "Please review the detected timestamp and interval value columns below."
             )
-        else:
-            demand_selections[key] = []
+            if item.demand_candidates:
+                st.caption("Detected candidate interval value columns: " + ", ".join(item.demand_candidates))
+        elif item.parser_notes:
+            st.caption(f"{item.account} / {item.filename}: " + _detection_label(item))
+
+        if review_columns or needs_review:
+            with st.expander(f"Column detection - {item.account} / {item.filename}", expanded=needs_review):
+                st.write(_detection_label(item))
+                for note in item.parser_notes:
+                    st.caption(note)
+                timestamp_options = _file_column_options(item)
+                timestamp_index = timestamp_options.index(item.timestamp_column) if item.timestamp_column in timestamp_options else 0
+                selected_timestamp = (
+                    st.selectbox(
+                        "Timestamp column",
+                        timestamp_options,
+                        index=timestamp_index,
+                        key=f"timestamp_column_{file_index}",
+                    )
+                    if timestamp_options
+                    else None
+                )
+                value_options = _file_column_options(item, value_only=True)
+                default_value = item.demand_columns[0] if item.demand_columns else (value_options[0] if value_options else "")
+                value_index = value_options.index(default_value) if default_value in value_options else 0
+                selected_value = (
+                    st.selectbox(
+                        "Interval value column",
+                        value_options,
+                        index=value_index,
+                        key=f"interval_value_column_{file_index}",
+                        help="This is the numeric interval column used for kW/kWh calculations, such as Demand, kW, Usage, or Consumption Recorded.",
+                    )
+                    if value_options
+                    else None
+                )
+                item = apply_column_overrides(
+                    item,
+                    timestamp_column=selected_timestamp,
+                    interval_value_columns=[selected_value] if selected_value else [],
+                )
+                updated_files[file_index] = item
+        key = (item.account, item.filename)
+        demand_selections[key] = item.demand_columns[:1]
+    extracted_files = updated_files
 
     st.caption(
         "The data interval is how much time each row in the FPL Excel file represents. "

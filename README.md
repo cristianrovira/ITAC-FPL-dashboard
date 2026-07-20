@@ -28,7 +28,7 @@ This app is separate from the ITAC Bill Analysis Tool. The original prototype is
 
 Choose the number of FPL accounts and upload one or more `.xlsx` or `.xls` interval-data files for each account. Accounts are labeled automatically as `Account 1`, `Account 2`, and so on. Files are held in memory for the current Streamlit session; the app does not permanently store client workbooks.
 
-The reader prioritizes the legacy FPL layout with headers on Excel row 4, then checks several common header positions. It accepts a combined timestamp column such as `DateTime` or `Timestamp`, or separate `Date` and `Time` columns.
+The reader prioritizes the legacy FPL layout with headers on Excel row 4, then checks several common header positions. It accepts a combined timestamp column such as `DateTime` or `Timestamp`, or separate `Date` and `Time` columns. The parser no longer depends on one exact interval-value header such as `Demand (kW)`: it scores candidate columns using forgiving header matching and data validation, so names such as `Demand`, `kW`, `Consumption Recorded`, `Usage`, `Energy`, and `Interval Load` can be detected automatically. If confidence is low, the app asks the user to choose the timestamp and interval-value columns manually.
 
 ### 2. Define operating shifts
 

@@ -87,9 +87,12 @@ def validate_files(
                 "Assigned reporting month": MONTH_NAMES[item.month - 1] if item.month else "",
                 "Assigned reporting year": item.year or "",
                 "Timestamp column": item.timestamp_column or "",
-                "Demand column(s)": ", ".join(demand_columns),
+                "Timestamp confidence": item.timestamp_detection_confidence,
+                "Interval value column(s)": ", ".join(demand_columns),
+                "Value confidence": item.demand_detection_confidence,
                 "Detected interval": interval_label(interval),
                 "Row count": item.row_count,
+                "Parser notes": join_messages(item.parser_notes),
                 "Status": status,
                 "Warning or error message": join_messages(errors + warnings),
             }
