@@ -434,8 +434,9 @@ else:
     if report_windows:
         st.subheader("Report coverage preview")
         st.caption(
-            "Review this before generating the workbook. Partial months are scaled/blended with nearby complete months; "
-            "missing months are estimated from complete uploaded months."
+            "Review this before generating the workbook. Missing months are estimated using seasonal month-of-year patterns "
+            "and nearby actual months. The method treats the annual report period as circular, so months at the "
+            "beginning of the report can use relevant months at the end as seasonal references."
         )
         st.dataframe(report_coverage_preview(extracted_files, report_windows, interval_overrides), use_container_width=True, hide_index=True)
 
@@ -479,7 +480,7 @@ else:
                 + "."
             )
         confirm_estimation = st.checkbox(
-            "I understand that missing months will be estimated from available month trends."
+            "I understand that missing months will be estimated from seasonal patterns and nearby actual months."
         )
     else:
         confirm_estimation = True
