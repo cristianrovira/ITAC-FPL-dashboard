@@ -289,9 +289,6 @@ else:
             )
             if item.demand_candidates:
                 st.caption("Detected candidate interval value columns: " + ", ".join(item.demand_candidates))
-        elif item.parser_notes:
-            st.caption(f"{item.account} / {item.filename}: " + _detection_label(item))
-
         if review_columns or needs_review:
             with st.expander(f"Column detection - {item.account} / {item.filename}", expanded=needs_review):
                 st.write(_detection_label(item))
