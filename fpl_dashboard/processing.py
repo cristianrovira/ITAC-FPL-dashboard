@@ -61,16 +61,23 @@ def normalize_file(
         raise ValueError(f"{item.filename} has no readable data.")
     frame = item.dataframe.copy()
     numeric = frame[list(demand_columns)].apply(pd.to_numeric, errors="coerce")
-    demand = numeric.sum(axis=1, min_count=1)
+    interval_values = numeric.sum(axis=1, min_count=1)
+    interval_hours = float(interval_hours)
+    if item.interval_value_unit == "energy_kwh":
+        interval_kwh = interval_values
+        demand = interval_values / interval_hours if interval_hours else interval_values
+    else:
+        demand = interval_values
+        interval_kwh = interval_values * interval_hours
     normalized = pd.DataFrame(
         {
             "Timestamp": pd.to_datetime(frame["__timestamp__"], errors="coerce"),
             "Demand kW": demand,
+            "Interval kWh": interval_kwh,
         }
     ).dropna(subset=["Timestamp", "Demand kW"])
     normalized = normalized.sort_values("Timestamp").drop_duplicates(subset=["Timestamp"], keep="last")
-    normalized["Interval Hours"] = float(interval_hours)
-    normalized["Interval kWh"] = normalized["Demand kW"] * normalized["Interval Hours"]
+    normalized["Interval Hours"] = interval_hours
     normalized["Account"] = item.account
     normalized["Source File"] = item.filename
     normalized["Year"] = int(item.year)

@@ -9,7 +9,7 @@ import streamlit as st
 
 from fpl_dashboard.charts import dashboard_charts
 from fpl_dashboard.estimation import estimate_missing_months
-from fpl_dashboard.extraction import apply_column_overrides, extract_excel_file
+from fpl_dashboard.extraction import UNIT_LABELS, apply_column_overrides, extract_excel_file
 from fpl_dashboard.processing import find_potential_issues, process_files
 from fpl_dashboard.report_period import (
     account_report_windows,
@@ -182,6 +182,7 @@ def _needs_column_review(item) -> bool:
         or not item.demand_columns
         or item.timestamp_detection_confidence in {"Low", "Not detected"}
         or item.demand_detection_confidence in {"Low", "Not detected"}
+        or item.interval_value_unit_confidence in {"Low", "Not detected"}
     )
 
 
@@ -190,7 +191,9 @@ def _detection_label(item) -> str:
         f"Timestamp: {item.timestamp_column or 'not detected'} "
         f"({item.timestamp_detection_confidence}); "
         f"Interval value: {', '.join(item.demand_columns) if item.demand_columns else 'not detected'} "
-        f"({item.demand_detection_confidence})"
+        f"({item.demand_detection_confidence}); "
+        f"Unit: {UNIT_LABELS.get(item.interval_value_unit, item.interval_value_unit)} "
+        f"({item.interval_value_unit_confidence})"
     )
 
 
@@ -320,10 +323,29 @@ else:
                     if value_options
                     else None
                 )
+                unit_options = {
+                    "Demand/power in kW": "power_kw",
+                    "Energy per interval in kWh": "energy_kwh",
+                    "Ask/flag if uncertain": "unknown",
+                }
+                current_unit = item.interval_value_unit if item.interval_value_unit in set(unit_options.values()) else "unknown"
+                unit_labels = list(unit_options)
+                unit_index = list(unit_options.values()).index(current_unit) if current_unit in unit_options.values() else 0
+                selected_unit_label = st.selectbox(
+                    "Interval value unit",
+                    unit_labels,
+                    index=unit_index,
+                    key=f"interval_value_unit_{file_index}",
+                    help=(
+                        "Use kW when each row is demand/power. Use kWh when each row is already interval energy, "
+                        "such as many Consumption Recorded exports."
+                    ),
+                )
                 item = apply_column_overrides(
                     item,
                     timestamp_column=selected_timestamp,
                     interval_value_columns=[selected_value] if selected_value else [],
+                    interval_value_unit=unit_options[selected_unit_label],
                 )
                 updated_files[file_index] = item
         key = (item.account, item.filename)
@@ -338,22 +360,33 @@ else:
     if all(value is not None for value in detected_values):
         st.success("Detected interval(s): " + ", ".join(sorted({interval_label(value) for value in detected_values})))
     else:
-        st.warning("At least one interval could not be detected. Use the manual override below for that file.")
+        st.warning("At least one interval could not be detected automatically. Choose a data interval below if needed.")
 
-    override_intervals = st.checkbox("Manually override detected interval")
+    interval_choice = st.selectbox(
+        "Data interval",
+        ["Auto-detect", "15 minutes", "30 minutes", "1 hour"],
+        index=0,
+        help="Use Auto-detect for normal files. A manual choice applies to every uploaded file in this run.",
+    )
     interval_overrides: dict[tuple[str, str], float] = {}
-    if override_intervals:
-        labels = list(INTERVAL_LABELS)
-        for file_index, item in enumerate(extracted_files):
-            detected = interval_label(item.detected_interval_hours)
-            default_index = labels.index(detected) if detected in labels else 0
-            selected_label = st.selectbox(
-                f"Data interval — {item.account} / {item.filename}",
-                labels,
-                index=default_index,
-                key=f"interval_override_{file_index}",
-            )
-            interval_overrides[(item.account, item.filename)] = INTERVAL_LABELS[selected_label]
+    if interval_choice != "Auto-detect":
+        selected_interval = INTERVAL_LABELS[interval_choice]
+        interval_overrides = {(item.account, item.filename): selected_interval for item in extracted_files}
+        st.info(f"Using {interval_choice} for all uploaded files.")
+    elif any(value is None for value in detected_values):
+        with st.expander("Advanced: configure intervals individually", expanded=True):
+            st.caption("Use this only if different uploaded files use different intervals or auto-detection failed for a few files.")
+            labels = list(INTERVAL_LABELS)
+            for file_index, item in enumerate(extracted_files):
+                detected = interval_label(item.detected_interval_hours)
+                default_index = labels.index(detected) if detected in labels else 0
+                selected_label = st.selectbox(
+                    f"Data interval - {item.account} / {item.filename}",
+                    labels,
+                    index=default_index,
+                    key=f"interval_override_{file_index}",
+                )
+                interval_overrides[(item.account, item.filename)] = INTERVAL_LABELS[selected_label]
 
     st.subheader("Report period")
     suggested_end = suggested_report_end(extracted_files, interval_overrides)

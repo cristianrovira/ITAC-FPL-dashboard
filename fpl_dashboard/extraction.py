@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, time
 from io import BytesIO
 from typing import Sequence
 
@@ -18,9 +19,11 @@ TIMESTAMP_COMBO_SEPARATOR = " + "
 TIMESTAMP_NAME_HINTS = {
     "date",
     "time",
+    "hour",
     "datetime",
     "timestamp",
     "readingtime",
+    "readingdate",
     "intervalstart",
     "intervalend",
     "intervaldatetime",
@@ -68,6 +71,11 @@ NON_VALUE_HINT_TOKENS = (
     "zip",
     "phone",
 )
+UNIT_LABELS = {
+    "power_kw": "Demand/power in kW",
+    "energy_kwh": "Energy per interval in kWh",
+    "unknown": "Unknown - assuming demand/power in kW",
+}
 
 
 @dataclass
@@ -79,6 +87,15 @@ class ColumnDetection:
 
 
 @dataclass
+class IntervalDetection:
+    hours: float | None
+    minutes: float | None
+    confidence: str
+    note: str | None = None
+    usable_differences: int = 0
+
+
+@dataclass
 class ExtractedFile:
     account: str
     filename: str
@@ -87,6 +104,9 @@ class ExtractedFile:
     demand_columns: list[str] = field(default_factory=list)
     numeric_columns: list[str] = field(default_factory=list)
     detected_interval_hours: float | None = None
+    detected_interval_minutes: float | None = None
+    interval_detection_confidence: str = "Not detected"
+    interval_detection_note: str = ""
     month: int | None = None
     year: int | None = None
     row_count: int = 0
@@ -97,6 +117,14 @@ class ExtractedFile:
     timestamp_detection_confidence: str = "Not detected"
     demand_detection_confidence: str = "Not detected"
     parser_notes: list[str] = field(default_factory=list)
+    timestamp_source: str = ""
+    timestamp_valid_count: int = 0
+    timestamp_unique_count: int = 0
+    first_timestamp: pd.Timestamp | None = None
+    last_timestamp: pd.Timestamp | None = None
+    interval_value_unit: str = "power_kw"
+    interval_value_unit_confidence: str = "Not detected"
+    interval_value_unit_note: str = ""
 
     @property
     def status(self) -> str:
@@ -139,32 +167,100 @@ def _name_hint_score(name: str, exact_hints: set[str], token_hints: Sequence[str
     return 22.0 if any(token in name for token in token_hints) else 0.0
 
 
-def detect_interval_hours(timestamps: pd.Series) -> tuple[float | None, str | None]:
-    """Detect 15-, 30-, or 60-minute data from timestamp spacing."""
+def _coerce_date_series(series: pd.Series) -> pd.Series:
+    parsed = pd.to_datetime(series, errors="coerce")
+    if parsed.notna().mean() >= 0.5:
+        return parsed
+    numeric = pd.to_numeric(series, errors="coerce")
+    if numeric.notna().mean() >= 0.5:
+        return pd.to_datetime(numeric, unit="D", origin="1899-12-30", errors="coerce")
+    return parsed
+
+
+def _coerce_time_value(value) -> pd.Timedelta | pd.NaT:
+    if value is None or pd.isna(value):
+        return pd.NaT
+    if isinstance(value, pd.Timestamp):
+        if pd.isna(value):
+            return pd.NaT
+        return pd.to_timedelta(value.hour, unit="h") + pd.to_timedelta(value.minute, unit="m") + pd.to_timedelta(value.second, unit="s")
+    if isinstance(value, datetime):
+        return pd.to_timedelta(value.hour, unit="h") + pd.to_timedelta(value.minute, unit="m") + pd.to_timedelta(value.second, unit="s")
+    if isinstance(value, time):
+        return pd.to_timedelta(value.hour, unit="h") + pd.to_timedelta(value.minute, unit="m") + pd.to_timedelta(value.second, unit="s")
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        numeric = float(value)
+        if 0 <= numeric < 1:
+            return pd.to_timedelta(round(numeric * 86400), unit="s")
+        if 0 <= numeric <= 24:
+            return pd.to_timedelta(round(numeric * 3600), unit="s")
+        return pd.NaT
+    text = str(value).strip()
+    if not text:
+        return pd.NaT
+    numeric = pd.to_numeric(pd.Series([text]), errors="coerce").iloc[0]
+    if pd.notna(numeric):
+        return _coerce_time_value(float(numeric))
+    parsed = pd.to_datetime(pd.Series([text]), errors="coerce").iloc[0]
+    if pd.isna(parsed):
+        return pd.NaT
+    parsed = pd.Timestamp(parsed)
+    return pd.to_timedelta(parsed.hour, unit="h") + pd.to_timedelta(parsed.minute, unit="m") + pd.to_timedelta(parsed.second, unit="s")
+
+
+def _coerce_time_series(series: pd.Series) -> pd.Series:
+    return series.apply(_coerce_time_value)
+
+
+def construct_timestamps(frame: pd.DataFrame, date_column: str, time_column: str | None = None) -> pd.Series:
+    """Construct timestamps from one combined column or separate date/time columns."""
+    date_values = _coerce_date_series(frame[date_column])
+    if time_column is None:
+        return date_values
+    time_values = _coerce_time_series(frame[time_column])
+    return date_values.dt.normalize() + time_values
+
+
+def interval_detection(timestamps: pd.Series) -> IntervalDetection:
+    """Detect interval length using the most common standard timestamp spacing."""
     clean = pd.to_datetime(timestamps, errors="coerce").dropna().sort_values().drop_duplicates()
+    if clean.nunique() < 2:
+        return IntervalDetection(None, None, "Not detected", "At least two distinct valid timestamps are required.", 0)
     differences = clean.diff().dropna().dt.total_seconds().div(60)
     differences = differences[(differences > 0) & (differences <= 180)]
     if differences.empty:
-        return None, "Not enough timestamps to detect the interval."
+        return IntervalDetection(None, None, "Not detected", "No usable positive timestamp gaps were found after removing duplicates and large gaps.", 0)
 
-    median = float(differences.median())
-    nearest = float(SUPPORTED_INTERVAL_MINUTES[np.argmin(np.abs(SUPPORTED_INTERVAL_MINUTES - median))])
-    if abs(median - nearest) > 1.0:
-        return None, f"Timestamp spacing ({median:g} minutes) is not a supported interval."
+    counts = {float(minutes): int((np.abs(differences - minutes) <= 1.0).sum()) for minutes in SUPPORTED_INTERVAL_MINUTES}
+    best_minutes, best_count = max(counts.items(), key=lambda item: item[1])
+    if best_count == 0:
+        common_gap = float(differences.round().mode().iloc[0])
+        return IntervalDetection(None, None, "Not detected", f"Most common timestamp spacing ({common_gap:g} minutes) is not a supported interval.", int(len(differences)))
 
-    consistency = float((np.abs(differences - nearest) <= 1.0).mean())
-    warning = None
+    consistency = best_count / len(differences)
+    if best_count >= 4 and consistency >= 0.8:
+        confidence = "High"
+    elif best_count >= 2 and consistency >= 0.5:
+        confidence = "Medium"
+    else:
+        confidence = "Low"
+    note = f"Detected {best_minutes:g}-minute spacing from {best_count} of {len(differences)} usable timestamp gaps."
     if consistency < 0.9:
-        warning = f"Only {consistency:.0%} of timestamp gaps match the detected interval."
-    return nearest / 60.0, warning
+        note += f" {1 - consistency:.0%} of usable gaps differ, likely due to missing rows or file boundaries."
+    return IntervalDetection(best_minutes / 60.0, best_minutes, confidence, note, int(len(differences)))
+
+
+def detect_interval_hours(timestamps: pd.Series) -> tuple[float | None, str | None]:
+    """Backward-compatible interval detector returning hours and warning/note."""
+    detected = interval_detection(timestamps)
+    if detected.hours is None:
+        return None, detected.note or "Not enough timestamps to detect the interval."
+    warning = None if detected.confidence == "High" else detected.note
+    return detected.hours, warning
 
 
 def detect_month_year(timestamps: pd.Series) -> tuple[int | None, int | None, str | None]:
-    """Assign one reporting month to a normal monthly billing-period file.
-
-    FPL exports commonly cross a calendar-month boundary. A two-calendar-month
-    span of up to 45 days is therefore normal and does not produce a warning.
-    """
+    """Assign one reporting month to a normal monthly billing-period file."""
     clean = pd.to_datetime(timestamps, errors="coerce").dropna().sort_values()
     if clean.empty:
         return None, None, "No valid timestamps were found."
@@ -186,19 +282,35 @@ def detect_month_year(timestamps: pd.Series) -> tuple[int | None, int | None, st
     return int(dominant.month), int(dominant.year), warning
 
 
+def _date_column_names(normalized: dict[str, str]) -> list[str]:
+    return [column for column, name in normalized.items() if name in {"date", "intervaldate", "readingdate"} or name.endswith("date")]
+
+
+def _time_column_names(normalized: dict[str, str]) -> list[str]:
+    return [column for column, name in normalized.items() if name in {"time", "hour", "intervaltime", "readingtime"} or name.endswith("time") or name.endswith("hour")]
+
+
 def _timestamp_parse_candidates(frame: pd.DataFrame) -> list[tuple[str, pd.Series]]:
     candidates: list[tuple[str, pd.Series]] = []
     normalized = {str(column): normalize_name(column) for column in frame.columns}
     columns_by_name = {name: column for column, name in normalized.items()}
 
-    date_columns = [column for column, name in normalized.items() if name in {"date", "intervaldate"} or name.endswith("date")]
-    time_columns = [column for column, name in normalized.items() if name in {"time", "intervaltime"} or name.endswith("time")]
+    date_columns = _date_column_names(normalized)
+    time_columns = _time_column_names(normalized)
+    seen: set[str] = set()
     for date_column in date_columns:
+        date_direct = construct_timestamps(frame, date_column)
+        has_time_component = bool((date_direct.dropna().dt.time != time(0, 0)).any()) if date_direct.notna().any() else False
+        if has_time_component:
+            candidates.append((date_column, date_direct))
+            seen.add(date_column)
+            continue
         for time_column in time_columns:
             if date_column == time_column:
                 continue
-            combined = frame[date_column].astype(str).str.strip() + " " + frame[time_column].astype(str).str.strip()
-            candidates.append((f"{date_column}{TIMESTAMP_COMBO_SEPARATOR}{time_column}", pd.to_datetime(combined, errors="coerce")))
+            label = f"{date_column}{TIMESTAMP_COMBO_SEPARATOR}{time_column}"
+            candidates.append((label, construct_timestamps(frame, date_column, time_column)))
+            seen.add(label)
 
     preferred_order = [
         "datetime",
@@ -210,11 +322,10 @@ def _timestamp_parse_candidates(frame: pd.DataFrame) -> list[tuple[str, pd.Serie
         "intervalend",
         "date",
     ]
-    seen = {label for label, _ in candidates}
     for hint in preferred_order:
         column = columns_by_name.get(hint)
         if column and column not in seen:
-            candidates.append((column, pd.to_datetime(frame[column], errors="coerce")))
+            candidates.append((column, construct_timestamps(frame, column)))
             seen.add(column)
 
     for column in frame.columns:
@@ -223,7 +334,7 @@ def _timestamp_parse_candidates(frame: pd.DataFrame) -> list[tuple[str, pd.Serie
             continue
         name = normalize_name(column)
         if "date" in name or "timestamp" in name or name in {"readingtime", "intervalstart", "intervalend"}:
-            candidates.append((column, pd.to_datetime(frame[column], errors="coerce")))
+            candidates.append((column, construct_timestamps(frame, column)))
             seen.add(column)
     return candidates
 
@@ -236,13 +347,13 @@ def _score_timestamps(frame: pd.DataFrame) -> _TimestampDetectionResult:
             continue
         clean = parsed.dropna().sort_values()
         unique_ratio = float(clean.nunique() / len(clean)) if len(clean) else 0.0
-        interval, _ = detect_interval_hours(clean)
+        detected = interval_detection(clean)
         name = normalize_name(label)
-        hint_score = _name_hint_score(name, TIMESTAMP_NAME_HINTS, ("date", "time", "timestamp"))
-        score = valid_ratio * 55 + unique_ratio * 10 + hint_score + (20 if interval is not None else 0)
-        reason_parts = [f"{valid_ratio:.0%} valid datetimes"]
-        if interval is not None:
-            reason_parts.append("interval spacing looks consistent")
+        hint_score = _name_hint_score(name, TIMESTAMP_NAME_HINTS, ("date", "time", "hour", "timestamp"))
+        score = valid_ratio * 50 + unique_ratio * 18 + hint_score + (25 if detected.hours is not None else 0)
+        reason_parts = [f"{valid_ratio:.0%} valid datetimes", f"{clean.nunique()} unique timestamps"]
+        if detected.hours is not None:
+            reason_parts.append(f"{detected.minutes:g}-minute interval spacing looks consistent")
         if hint_score:
             reason_parts.append("header looks timestamp-related")
         detections.append((ColumnDetection(label, "", score, "; ".join(reason_parts)), parsed))
@@ -268,10 +379,9 @@ def _parse_manual_timestamps(frame: pd.DataFrame, selection: str | None) -> tupl
     if TIMESTAMP_COMBO_SEPARATOR in selection:
         parts = selection.split(TIMESTAMP_COMBO_SEPARATOR, maxsplit=1)
         if len(parts) == 2 and all(part in frame.columns for part in parts):
-            combined = frame[parts[0]].astype(str).str.strip() + " " + frame[parts[1]].astype(str).str.strip()
-            return pd.to_datetime(combined, errors="coerce"), selection
+            return construct_timestamps(frame, parts[0], parts[1]), selection
     if selection in frame.columns:
-        return pd.to_datetime(frame[selection], errors="coerce"), selection
+        return construct_timestamps(frame, selection), selection
     return None, None
 
 
@@ -337,6 +447,16 @@ def _score_value_columns(frame: pd.DataFrame, timestamp_column: str | None = Non
     return _ValueDetectionResult(auto_columns, numeric_columns, confidence, candidates)
 
 
+def infer_interval_value_unit(column: str | None, interval_hours: float | None = None) -> tuple[str, str, str]:
+    """Infer whether uploaded interval values are power kW or interval energy kWh."""
+    name = normalize_name(column or "")
+    if "kwh" in name or any(token in name for token in ("energy", "consumption", "usage")):
+        return "energy_kwh", "High", "Header indicates uploaded values are interval energy/usage; kWh is not multiplied by interval duration."
+    if "kw" in name or "demand" in name or "load" in name:
+        return "power_kw", "High", "Header indicates uploaded values are demand/power; kWh is calculated as kW times interval hours."
+    return "power_kw", "Low", "Could not confidently determine units; assuming demand/power kW unless manually overridden."
+
+
 def detect_demand_columns(frame: pd.DataFrame, timestamp_column: str | None = None) -> tuple[list[str], list[str]]:
     """Backward-compatible wrapper returning detected interval-value and numeric columns."""
     detection = _score_value_columns(frame, timestamp_column)
@@ -356,7 +476,7 @@ def _manual_timestamp_options(frame: pd.DataFrame, timestamp_detection: _Timesta
 
 def _read_best_sheet(content: bytes) -> tuple[pd.DataFrame, _TimestampDetectionResult]:
     errors: list[str] = []
-    fallback: tuple[pd.DataFrame, _TimestampDetectionResult] | None = None
+    best: tuple[pd.DataFrame, _TimestampDetectionResult, float] | None = None
     for header_row in (3, 0, 1, 2, 4, 5):
         try:
             frame = pd.read_excel(BytesIO(content), header=header_row)
@@ -367,15 +487,22 @@ def _read_best_sheet(content: bytes) -> tuple[pd.DataFrame, _TimestampDetectionR
         if frame.empty:
             continue
         timestamp_detection = _score_timestamps(frame)
-        if timestamp_detection.confidence in {"High", "Medium"}:
-            return frame, timestamp_detection
-        if fallback is None or len(frame) > len(fallback[0]):
-            fallback = (frame, timestamp_detection)
-    if fallback is not None:
-        return fallback
+        score = timestamp_detection.candidates[0].score if timestamp_detection.candidates else 0.0
+        if best is None or score > best[2]:
+            best = (frame, timestamp_detection, score)
+    if best is not None:
+        return best[0], best[1]
     if errors:
         raise ValueError(f"Excel file could not be read: {errors[0]}")
     raise ValueError("No usable worksheet was found.")
+
+
+def _populate_timestamp_diagnostics(result: ExtractedFile, timestamps: pd.Series) -> None:
+    clean = pd.to_datetime(timestamps, errors="coerce").dropna().sort_values()
+    result.timestamp_valid_count = int(clean.size)
+    result.timestamp_unique_count = int(clean.nunique())
+    result.first_timestamp = pd.Timestamp(clean.iloc[0]) if not clean.empty else None
+    result.last_timestamp = pd.Timestamp(clean.iloc[-1]) if not clean.empty else None
 
 
 def _populate_result_from_detection(
@@ -383,6 +510,7 @@ def _populate_result_from_detection(
     frame: pd.DataFrame,
     timestamp_detection: _TimestampDetectionResult,
     demand_columns: Sequence[str] | None = None,
+    interval_value_unit: str | None = None,
 ) -> ExtractedFile:
     result.dataframe = frame.copy()
     result.row_count = len(frame)
@@ -391,6 +519,7 @@ def _populate_result_from_detection(
 
     result.timestamp_candidates = _manual_timestamp_options(frame, timestamp_detection)
     result.timestamp_column = timestamp_detection.column
+    result.timestamp_source = timestamp_detection.column or ""
     result.timestamp_detection_confidence = timestamp_detection.confidence
     if timestamp_detection.candidates:
         best = timestamp_detection.candidates[0]
@@ -399,6 +528,7 @@ def _populate_result_from_detection(
     timestamps = timestamp_detection.timestamps
     if timestamps is not None and timestamp_detection.column is not None:
         result.dataframe["__timestamp__"] = timestamps
+        _populate_timestamp_diagnostics(result, timestamps)
         valid_timestamp_ratio = float(timestamps.notna().mean())
         if valid_timestamp_ratio < 0.95:
             result.warnings.append(f"{1 - valid_timestamp_ratio:.1%} of rows have invalid timestamps.")
@@ -407,9 +537,15 @@ def _populate_result_from_detection(
         result.month, result.year, month_warning = detect_month_year(timestamps)
         if month_warning:
             result.warnings.append(month_warning)
-        result.detected_interval_hours, interval_warning = detect_interval_hours(timestamps)
-        if interval_warning:
-            result.warnings.append(interval_warning)
+        detected_interval = interval_detection(timestamps)
+        result.detected_interval_hours = detected_interval.hours
+        result.detected_interval_minutes = detected_interval.minutes
+        result.interval_detection_confidence = detected_interval.confidence
+        result.interval_detection_note = detected_interval.note or ""
+        if detected_interval.hours is None:
+            result.warnings.append(detected_interval.note or "The data interval could not be detected.")
+        elif detected_interval.confidence != "High":
+            result.warnings.append(detected_interval.note or "The data interval was detected with limited confidence.")
     else:
         result.warnings.append("A timestamp column was not detected automatically; select one manually.")
 
@@ -431,6 +567,21 @@ def _populate_result_from_detection(
             result.parser_notes.append(f"Interval value: selected {best_value.column} ({best_value.confidence}; {best_value.reason}).")
     if not result.demand_columns:
         result.warnings.append("An interval value column was not detected automatically; select one manually.")
+
+    if interval_value_unit:
+        result.interval_value_unit = interval_value_unit
+        result.interval_value_unit_confidence = "Manual override"
+        result.interval_value_unit_note = UNIT_LABELS.get(interval_value_unit, interval_value_unit)
+    else:
+        selected_column = result.demand_columns[0] if result.demand_columns else None
+        unit, confidence, note = infer_interval_value_unit(selected_column, result.detected_interval_hours)
+        result.interval_value_unit = unit
+        result.interval_value_unit_confidence = confidence
+        result.interval_value_unit_note = note
+        if confidence == "Low":
+            result.warnings.append(note)
+    if result.interval_value_unit_note:
+        result.parser_notes.append(f"Units: {UNIT_LABELS.get(result.interval_value_unit, result.interval_value_unit)} ({result.interval_value_unit_confidence}; {result.interval_value_unit_note})")
     return result
 
 
@@ -448,6 +599,7 @@ def apply_column_overrides(
     item: ExtractedFile,
     timestamp_column: str | None = None,
     interval_value_columns: Sequence[str] | None = None,
+    interval_value_unit: str | None = None,
 ) -> ExtractedFile:
     """Return a fresh ExtractedFile after applying user-selected parser columns."""
     if item.dataframe is None:
@@ -465,4 +617,4 @@ def apply_column_overrides(
         )
     result = ExtractedFile(account=item.account, filename=item.filename)
     selected_values = [column for column in (interval_value_columns or item.demand_columns) if column in frame.columns]
-    return _populate_result_from_detection(result, frame, timestamp_detection, selected_values)
+    return _populate_result_from_detection(result, frame, timestamp_detection, selected_values, interval_value_unit)
